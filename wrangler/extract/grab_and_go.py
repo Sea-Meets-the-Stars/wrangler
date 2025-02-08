@@ -10,9 +10,13 @@ from remote_sensing.download import podaac
 from wrangler.datasets.loader import load_dataset
 from wrangler.extract import sst as ex_sst
 
-async def grab(aios_ds, t0, t1,
-               verbose:bool=True):
+from IPython import embed
 
+async def grab(aios_ds, t0, t1,
+               verbose:bool=True,
+               skip_download:bool=False):
+
+    local_files = None
     if aios_ds.source == 'PODAAC':
         # Grab the file list
         files, _ = podaac.grab_file_list(
@@ -21,7 +25,8 @@ async def grab(aios_ds, t0, t1,
             verbose=verbose)
 
         # Download
-        local_files = podaac.download_files(files, verbose=verbose)
+        if not skip_download:  # for testing
+            local_files = podaac.download_files(files, verbose=verbose)
     else:
         raise ValueError("Only PODAAC datasets supported")
 
@@ -56,7 +61,13 @@ async def run(dataset:str, tstart, tend, extract_options:dict,
     t0 = tstart
     iproc = None
     for step in range(99999999999):
+        # Increment
         t1 = t0 + tdelta
+
+        # Convert to ISO
+        t0s = t0.isoformat()
+        t1s = t1.isoformat()
+
         # Check
         if t0 > tend:
             break
@@ -64,11 +75,11 @@ async def run(dataset:str, tstart, tend, extract_options:dict,
         if verbose:
             print(f"Working on {t0}")
 
-
         # Start the grab asynchronous
-        igrab = asyncio.create_task(grab(aios_ds, t0, t1))
+        igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
         # Wait for it
         local_files = await igrab
+        embed(header='104 of grab_and_go') 
 
         # Wait for the previous process to end
         if iproc is not None:
