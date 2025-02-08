@@ -60,17 +60,14 @@ async def run(dataset:str, tstart, tend, extract_options:dict,
     # Begin downloading
     t0 = tstart
     iproc = None
-    for step in range(99999999999):
+
+    while t0 < tend:
         # Increment
         t1 = t0 + tdelta
 
         # Convert to ISO
         t0s = t0.isoformat()
         t1s = t1.isoformat()
-
-        # Check
-        if t0 > tend:
-            break
 
         if verbose:
             print(f"Working on {t0}")

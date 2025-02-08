@@ -3,6 +3,8 @@
 import os
 import numpy as np
 
+from remote_sensing.netcdf import sst as rs_nc_sst
+
 from wrangler.datasets.base import AIOS_DataSet
 
 #from ulmo.viirs import io as viirs_io 
@@ -48,10 +50,11 @@ def extract_file(aios_ds:AIOS_DataSet,
     """
 
     # Load the image
-    embed(header='51 of extract_file')
-    sst, qual, latitude, longitude = viirs_io.load_nc(filename, verbose=True)
+    #embed(header='51 of extract_file')
+    sst, qual, latitude, longitude = rs_nc_sst.load(filename, verbose=True)
     if sst is None:
         return
+    import pdb; pdb.set_trace()
 
     # Generate the masks
     masks = pp_utils.build_mask(sst, qual, 
