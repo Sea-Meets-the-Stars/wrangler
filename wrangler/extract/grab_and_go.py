@@ -79,7 +79,8 @@ async def run(dataset:str, tstart, tend, extract_options:dict,
         igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
         # Wait for it
         local_files = await igrab
-        embed(header='104 of grab_and_go') 
+        import pdb; pdb.set_trace()
+        #embed(header='104 of grab_and_go') 
 
         # Wait for the previous process to end
         if iproc is not None:
