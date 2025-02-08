@@ -5,10 +5,16 @@ import asyncio
 import pandas
 import datetime
 
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor
+import subprocess
+from tqdm import tqdm
+
 from remote_sensing.download import podaac
 
 from wrangler.datasets.loader import load_dataset
 from wrangler.extract import sst as ex_sst
+from wrangler.extract import io as ex_io
 
 from IPython import embed
 
@@ -34,20 +40,33 @@ async def grab(aios_ds, t0, t1,
     return local_files
 
 async def extract(aios_ds, local_files:str,
-                  extract_options:dict,
+                  exdict:dict,
                   verbose:bool=True):
 
     if aios_ds.field == 'SST':
-        for local_file in local_files:
-            ex_sst.extract_file(aios_ds, local_file, **extract_options)
+        map_fn = partial(ex_sst.extract_file,
+                     field_size=(exdict['field_size'], exdict['field_size']),
+                     CC_max=1.-exdict['clear_threshold'] / 100.,
+                     nadir_offset=exdict['nadir_offset'],
+                     temp_bounds=tuple(exdict['temp_bounds']),
+                     nrepeat=exdict['nrepeat'],
+                     sub_grid_step=exdict['sub_grid_step'],
+                     inpaint=exdict['inpaint'])
     else:
         raise ValueError("Only SST datasets supported so far")
 
+    # Multi-process
 
-async def run(dataset:str, tstart, tend, extract_options:dict,
+    for local_file in local_files:
+            ex_sst.extract_file(aios_ds, local_file)
+
+async def run(dataset:str, tstart, tend, eoption_file:str,
               outfile:str, tdelta:dict={'days':1}, 
               verbose:bool=True, debug:bool=False, 
               save_local_files:bool=False):
+
+    # Load options
+    exdict = ex_io.load_options(eoption_file)
 
     # Convert tstart, tend to datetime
     tstart = pandas.to_datetime(tstart)
@@ -92,7 +111,7 @@ async def run(dataset:str, tstart, tend, extract_options:dict,
 
         # Process
         iproc = asyncio.create_task(extract(aios_ds, local_files,
-                                            extract_options))
+                                            exdict))
 
         # Increment
         t0 += tdelta
