@@ -1,7 +1,9 @@
 """ Routines to grab and extract dataasets in one go """
 
+import os
 import asyncio
 import pandas
+import datetime
 
 from remote_sensing.download import podaac
 
@@ -14,7 +16,7 @@ async def grab(aios_ds, t0, t1,
     if aios_ds.source == 'PODAAC':
         # Grab the file list
         files, _ = podaac.grab_file_list(
-            aios_ds.collection, 
+            aios_ds.podaac_collection, 
             time_range=(t0, t1),
             verbose=verbose)
 
@@ -27,7 +29,7 @@ async def grab(aios_ds, t0, t1,
     return local_files
 
 async def extract(aios_ds, local_files:str,
-                  extract_options:dict={},
+                  extract_options:dict,
                   verbose:bool=True):
 
     if aios_ds.field == 'SST':
@@ -37,14 +39,15 @@ async def extract(aios_ds, local_files:str,
         raise ValueError("Only SST datasets supported so far")
 
 
-async def run(dataset:str, tstart, tend, outfile:str,
-        tdelta:dict={'days':1}, verbose:bool=True,
-        debug:bool=False):
+async def run(dataset:str, tstart, tend, extract_options:dict,
+              outfile:str, tdelta:dict={'days':1}, 
+              verbose:bool=True, debug:bool=False, 
+              save_local_files:bool=False):
 
     # Convert tstart, tend to datetime
     tstart = pandas.to_datetime(tstart)
     tend = pandas.to_datetime(tend)
-    tdelta = pandas.to_timedelta(**tdelta)
+    tdelta = pandas.to_timedelta(datetime.timedelta(**tdelta))
 
     # Instantiate the AIOS_DataSet
     aios_ds = load_dataset(dataset)
@@ -61,11 +64,6 @@ async def run(dataset:str, tstart, tend, outfile:str,
         if verbose:
             print(f"Working on {t0}")
 
-        # Wait for the process to finish
-        if iproc is None:
-            continue
-        else:
-            pass
 
         # Start the grab asynchronous
         igrab = asyncio.create_task(grab(aios_ds, t0, t1))
@@ -75,9 +73,17 @@ async def run(dataset:str, tstart, tend, outfile:str,
         # Wait for the previous process to end
         if iproc is not None:
             await iproc
+            # Delete the local files
+            if not save_local_files:
+                for local_file in previous_local_files:
+                    os.remove(local_file)
+
+        # Hold the local_files for removing
+        previous_local_files = [ifile for ifile in local_files]
 
         # Process
-        iproc = asyncio.create_task(extract(local_files))
+        iproc = asyncio.create_task(extract(aios_ds, local_files,
+                                            extract_options))
 
         # Increment
         t0 += tdelta
