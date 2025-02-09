@@ -217,6 +217,5 @@ def extract_file(aios_ds:AIOS_DataSet,
         metadata.append([filename, str(row), str(col), str(lat), str(lon), str(clear_frac)])
 
     del dfield, masks
-    import pdb; pdb.set_trace()
 
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata)

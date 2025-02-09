@@ -118,7 +118,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
 
         # Process
         iproc = asyncio.create_task(extract(aios_ds, local_files,
-                                            exdict))
+                                            exdict, debug=debug))
 
         # Increment
         t0 += tdelta
