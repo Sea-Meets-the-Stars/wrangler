@@ -172,6 +172,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
 
     # Finish
     # Metadata
+    import pdb; pdb.set_trace()
     columns = ['filename', 'row', 'column', 'latitude', 'longitude', 
                'clear_fraction']
     dset = f_h5.create_dataset('metadata', data=np.concatenate(metadata).astype('S'))
