@@ -181,7 +181,7 @@ def extract_file(aios_ds:AIOS_DataSet,
     if nadir_offset > 0:
         lb = nadir_pix - nadir_offset
         ub = nadir_pix + nadir_offset
-        sst = sst[:, lb:ub]
+        dfield = dfield[:, lb:ub]
         masks = masks[:, lb:ub].astype(np.uint8)
     else:
         lb = 0
@@ -197,10 +197,9 @@ def extract_file(aios_ds:AIOS_DataSet,
     # Extract
     fields, inpainted_masks = [], []
     metadata = []
-    import pdb; pdb.set_trace()
     for r, c, clear_frac in zip(rows, cols, clear_fracs):
         # Inpaint?
-        field = sst[r:r+field_size[0], c:c+field_size[1]]
+        field = dfield[r:r+field_size[0], c:c+field_size[1]]
         mask = masks[r:r+field_size[0], c:c+field_size[1]]
         if inpaint:
             inpainted, _ = pp_field.main(field, mask, only_inpaint=True)
@@ -217,7 +216,7 @@ def extract_file(aios_ds:AIOS_DataSet,
         lon = longitude[row + field_size[0] // 2, col + field_size[1] // 2]
         metadata.append([filename, str(row), str(col), str(lat), str(lon), str(clear_frac)])
 
-    del sst, masks
+    del dfield, masks
     import pdb; pdb.set_trace()
 
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata)
