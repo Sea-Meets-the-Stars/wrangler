@@ -124,8 +124,8 @@ def clear_grid(mask, field_size, method, CC_max=0.05,
 
 
 
-def extract_file(aios_ds:AIOS_DataSet,
-                 filename:str, 
+def extract_file(filename:str, 
+                 aios_ds:AIOS_DataSet=None,
                  field_size=(192,192),
                  nadir_offset=0,
                  CC_max=0.05, 
@@ -142,6 +142,8 @@ def extract_file(aios_ds:AIOS_DataSet,
 
     Args:
         filename (str): VIIRS datafile with path
+        aiost_ds (AIOS_DataSet): AIOS dataset
+            Required!
         field_size (tuple, optional): [description]. Defaults to (128,128).
         nadir_offset (int, optional): [description]. Defaults to 480.
             Zero means none.

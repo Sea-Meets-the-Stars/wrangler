@@ -52,6 +52,7 @@ async def extract(aios_ds, local_files:str,
 
     if aios_ds.field == 'SST':
         map_fn = partial(ex_sst.extract_file,
+                     aios_ds=aios_ds,
                      field_size=(exdict['field_size'], exdict['field_size']),
                      CC_max=1.-exdict['clear_threshold'] / 100.,
                      nadir_offset=exdict['nadir_offset'],
