@@ -221,5 +221,6 @@ def extract_file(filename:str,
     del dfield, masks
 
     if len(fields) == 0:
-        import pdb; pdb.set_trace()
+        print(f"No fields for: {filename}")
+        return None, None, None, None
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
