@@ -67,7 +67,7 @@ async def extract(aios_ds, local_files:str,
     if debug:
         # Single process
         local_file = local_files[0]
-        items = map_fn(aios_ds, local_file)
+        items = map_fn(local_file)
         import pdb; pdb.set_trace()
 
     # Multi-process
