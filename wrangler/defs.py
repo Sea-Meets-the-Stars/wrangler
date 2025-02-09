@@ -1,7 +1,7 @@
-""" Define data model, options, etc. for SSL models and analysis"""
+""" Define data model, options, etc. for Nenya models and analysis"""
 import numpy as np
 
-# SSL options
+# Nenya options
 tbl_dmodel = {
     'print_freq': dict(dtype=(int, np.integer),
                 help='How often to print to screen'),
@@ -27,10 +27,10 @@ tbl_dmodel = {
                 help='Decay parameter in optimizer'),
     'momentum': dict(dtype=float,
                 help='Momentum parameter in optimizer'),
-    'ssl_model': dict(dtype=str,
-                help='Model for SSL'),
-    'ssl_method': dict(dtype=str,
-                help='Method for SSL'),
+    'nenya_model': dict(dtype=str,
+                help='Model for Nenya'),
+    'nenya_method': dict(dtype=str,
+                help='Method for Nenya'),
     'model_root': dict(dtype=str,
                 help='Root name of the model.  Used for the file tree'),
     'model_name': dict(dtype=str,

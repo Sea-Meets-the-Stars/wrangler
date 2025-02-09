@@ -165,7 +165,7 @@ def extract_file(filename:str,
     # Load the image
     #embed(header='51 of extract_file')
     if aios_ds.field == 'SST':
-        dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=True)
+        dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=False)
     else:
         raise ValueError("Only SST datasets supported so far")
 
