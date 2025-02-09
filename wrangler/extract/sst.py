@@ -220,4 +220,6 @@ def extract_file(filename:str,
 
     del dfield, masks
 
+    if len(fields) == 0:
+        import pdb; pdb.set_trace()
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
