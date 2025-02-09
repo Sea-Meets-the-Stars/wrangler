@@ -169,7 +169,6 @@ def extract_file(aios_ds:AIOS_DataSet,
 
     if dfield is None:
         return
-    import pdb; pdb.set_trace()
 
     # Generate the masks
     masks = rs_nc_utils.build_mask(dfield, qual, 
@@ -198,6 +197,7 @@ def extract_file(aios_ds:AIOS_DataSet,
     # Extract
     fields, inpainted_masks = [], []
     metadata = []
+    import pdb; pdb.set_trace()
     for r, c, clear_frac in zip(rows, cols, clear_fracs):
         # Inpaint?
         field = sst[r:r+field_size[0], c:c+field_size[1]]
@@ -218,5 +218,6 @@ def extract_file(aios_ds:AIOS_DataSet,
         metadata.append([filename, str(row), str(col), str(lat), str(lon), str(clear_frac)])
 
     del sst, masks
+    import pdb; pdb.set_trace()
 
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata)

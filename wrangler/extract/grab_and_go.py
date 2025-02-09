@@ -41,6 +41,7 @@ async def grab(aios_ds, t0, t1,
 
 async def extract(aios_ds, local_files:str,
                   exdict:dict,
+                  debug:bool=False,
                   verbose:bool=True):
 
     if aios_ds.field == 'SST':
@@ -55,8 +56,14 @@ async def extract(aios_ds, local_files:str,
     else:
         raise ValueError("Only SST datasets supported so far")
 
-    # Multi-process
 
+    if debug:
+        # Single process
+        for local_file in local_files:
+            import pdb; pdb.set_trace()
+            map_fn(aios_ds, local_file)
+
+    # Multi-process
     for local_file in local_files:
             ex_sst.extract_file(aios_ds, local_file)
 
