@@ -113,6 +113,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
     print("Opened local file: {}".format(ex_file))
 
     times = []
+    first_time = True
     while t0 < tend:
         # Increment
         t1 = t0 + tdelta
@@ -136,7 +137,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
             fields, inpainted_masks, imetadata, itimes  = await iproc
             times.append(itimes)
             # Write
-            if t0 == tstart:
+            if first_time:
                 f_h5.create_dataset('fields', data=fields, 
                                     compression="gzip", chunks=True,
                                     maxshape=(None, fields.shape[1], fields.shape[2]))
@@ -144,6 +145,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
                                     compression="gzip", chunks=True,
                                     maxshape=(None, inpainted_masks.shape[1], inpainted_masks.shape[2]))
                 metadata = imetadata
+                first_time = False
             else:
                 # Resize
                 for key in ['fields', 'inpainted_masks']:
@@ -168,7 +170,6 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         # Increment
         t0 += tdelta
 
-    import pdb; pdb.set_trace()
     # Finish
     # Metadata
     columns = ['filename', 'row', 'column', 'latitude', 'longitude', 
