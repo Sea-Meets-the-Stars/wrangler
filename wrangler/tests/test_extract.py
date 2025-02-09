@@ -16,7 +16,7 @@ def test_grab_filelist():
 extract_file = 'files/extract_viirs_std.json'
 asyncio.run(grab_and_go.run('VIIRS_NPP', '2024-01-01', 
                             '2024-01-02', extract_file,
-                            'test.h5', 
+                            'test.h5', 4,
                             verbose=True, debug=True, 
                             save_local_files=True))
 

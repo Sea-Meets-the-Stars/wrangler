@@ -157,13 +157,13 @@ def extract_file(aios_ds:AIOS_DataSet,
         debug (bool, optional): [description]. Defaults to False.
 
     Returns:
-        tuple: raw_SST, inpainted_mask, metadata
+        tuple: raw_SST, inpainted_mask, metadata, time
     """
 
     # Load the image
     #embed(header='51 of extract_file')
     if aios_ds.field == 'SST':
-        dfield, qual, latitude, longitude = rs_nc_sst.load(filename, verbose=True)
+        dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=True)
     else:
         raise ValueError("Only SST datasets supported so far")
 
@@ -218,4 +218,4 @@ def extract_file(aios_ds:AIOS_DataSet,
 
     del dfield, masks
 
-    return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata)
+    return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
