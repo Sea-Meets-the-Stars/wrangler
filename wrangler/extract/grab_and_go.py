@@ -11,7 +11,6 @@ import h5py
 
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor
-import subprocess
 from tqdm import tqdm
 
 from remote_sensing.download import podaac

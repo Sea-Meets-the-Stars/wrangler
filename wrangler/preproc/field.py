@@ -7,17 +7,17 @@ from scipy.ndimage import median_filter
 from scipy import special
 from skimage.transform import downscale_local_mean, resize_local_mean
 from skimage import filters
-from sklearn.utils import shuffle
 
 
-def main(field, mask, inpaint=True, median=True, med_size=(3,1),
-                  downscale=True, dscale_size=(2,2), sigmoid=False, scale=None,
-                  expon=None, only_inpaint=False, gradient=False,
-                  min_mean=None, de_mean=True,
-                  field_size=None,
-                  fixed_km=None,
-                  noise=None,
-                  log_scale=False, **kwargs):
+def main(field, mask, inpaint=False, 
+         median=False, med_size=(3,1),
+         downscale=False, dscale_size=(2,2), 
+         sigmoid=False, scale=None,
+         expon=None, only_inpaint=False, gradient=False,
+         min_mean=None, de_mean=False,
+         field_size=None, resize:bool=False, 
+         noise=None,
+         log_scale=False, **kwargs):
     """
     Preprocess an input field image with a series of steps:
         1. Inpainting
@@ -59,8 +59,8 @@ def main(field, mask, inpaint=True, median=True, med_size=(3,1),
         If True, subtract the mean
     min_mean : float, optional
         If provided, require the image has a mean exceeding this value
-    fixed_km : float, optional
-        If provided the input image is smaller than desired, so cut it down!
+    rsize : bool, optional
+        If provided, resize the input imzge to field_size x field_size 
     **kwargs : catches extraction keywords
 
     Returns
@@ -92,7 +92,7 @@ def main(field, mask, inpaint=True, median=True, med_size=(3,1),
     meta_dict['T90'] = field.flatten()[srt[i90]]
 
     # Resize?
-    if fixed_km is not None:
+    if resize is not None:
         field = resize_local_mean(field, (field_size, field_size))
 
     # Add noise?
