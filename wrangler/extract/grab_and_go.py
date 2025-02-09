@@ -114,7 +114,8 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
 
     times = []
     first_time = True
-    while t0 < tend:
+    time_to_break = False
+    while True:  # yes this is crazy
         # Increment
         t1 = t0 + tdelta
 
@@ -126,10 +127,13 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
             print(f"Working on {t0}")
 
         # Start the grab asynchronous
-        igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
-        # Wait for it
-        print("Waiting for downloads to finish...")
-        local_files = await igrab
+        if t1 <= tend:
+            igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
+            # Wait for it
+            print("Waiting for downloads to finish...")
+            local_files = await igrab
+        else:
+            time_to_break = True
         #import pdb; pdb.set_trace()
         #embed(header='104 of grab_and_go') 
 
@@ -166,6 +170,8 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         previous_local_files = [ifile for ifile in local_files]
 
         # Process
+        if time_to_break:
+            break
         print("Starting extraction")
         iproc = asyncio.create_task(extract(aios_ds, local_files,
                                             exdict, n_cores, debug=debug))
