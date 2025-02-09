@@ -128,12 +128,14 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         # Start the grab asynchronous
         igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
         # Wait for it
+        print("Waiting for downloads to finish...")
         local_files = await igrab
         #import pdb; pdb.set_trace()
         #embed(header='104 of grab_and_go') 
 
         # Wait for the previous process to end
         if iproc is not None:
+            print("Waiting for processing to finish...")
             fields, inpainted_masks, imetadata, itimes  = await iproc
             times.append(itimes)
             # Write
@@ -164,6 +166,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         previous_local_files = [ifile for ifile in local_files]
 
         # Process
+        print("Starting extraction")
         iproc = asyncio.create_task(extract(aios_ds, local_files,
                                             exdict, n_cores, debug=debug))
 
