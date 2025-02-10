@@ -9,6 +9,7 @@ Wrangler is a Python package for processing and analyzing satellite data, with a
 
    installation
    quickstart
+   datamodel
 
 .. toctree::
    :maxdepth: 2
@@ -16,7 +17,6 @@ Wrangler is a Python package for processing and analyzing satellite data, with a
 
    api/datasets
    api/processing
-   api/datamodel
    api/io
    api/utils
 
