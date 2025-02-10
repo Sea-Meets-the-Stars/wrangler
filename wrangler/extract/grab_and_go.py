@@ -92,6 +92,35 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
               n_cores:int, tdelta:dict={'days':1}, 
               verbose:bool=True, debug:bool=False, 
               save_local_files:bool=False):
+    """ Grab and extract data from a dataset in one go
+
+    The code will grab the data from the dataset between tstart and tend
+    in time increments of tdelta. The data will be extracted using the
+    extraction options in eoption_file. The extracted data will be saved
+    in ex_file and the metadata will be saved in tbl_file. The number of
+    cores to use is n_cores.
+
+    Outputs:
+    - ex_file: HDF5 file with the extracted data
+    - tbl_file: Parquet file with the metadata
+    
+
+    Args:
+        dataset (str): Name of the dataset
+        tstart (str): Start time in ISO format
+        tend (str): End time in ISO format
+        eoption_file (str): Filename of the extraction options
+        ex_file (str): Filename of the extraction file
+        tbl_file (str): Filename of the table file
+        n_cores (int): Number of cores to use
+        tdelta (dict, optional): Time delta. Defaults to {'days':1}.
+        verbose (bool, optional): Print verbose output. Defaults to True.
+        debug (bool, optional): Debug mode. Defaults to False.
+        save_local_files (bool, optional): Save local files. Defaults to False.
+
+    Returns:
+        None
+    """
 
     # Load options
     exdict = ex_io.load_options(eoption_file)
