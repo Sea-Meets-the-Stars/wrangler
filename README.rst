@@ -12,7 +12,9 @@ Wrangler |forks| |stars|
     :target: https://wrangler.readthedocs.io/en/latest/?badge=latest
     :alt: Documentation Status
 
-Wrangler is a Python package for efficiently downloading, processing, and analyzing satellite data, with a current focus on VIIRS Sea Surface Temperature (SST) data from PODAAC.
+Wrangler is a Python package for efficiently downloading, 
+processing, and analyzing satellite data, with a current focus 
+on VIIRS Sea Surface Temperature (SST) data from PODAAC.
 
 Key Features
 -----------
