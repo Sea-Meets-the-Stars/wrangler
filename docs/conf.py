@@ -3,9 +3,9 @@ import sys
 sys.path.insert(0, os.path.abspath('..'))
 
 # -- Project information -----------------------------------------------------
-project = 'Remote Sensing'
+project = 'The Wrangler'
 copyright = '2025'
-author = 'Your Name'
+author = 'J. Xavier Prochaska'
 
 # The full version, including alpha/beta/rc tags
 release = '0.1.0'
