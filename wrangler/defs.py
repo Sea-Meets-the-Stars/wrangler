@@ -1,109 +1,65 @@
 """ Define data model, options, etc. for Nenya models and analysis"""
-import numpy as np
 
-# Nenya options
+import numpy as np
+import pandas
+
+# Wrangler options
 tbl_dmodel = {
-    'print_freq': dict(dtype=(int, np.integer),
-                help='How often to print to screen'),
-    'save_freq': dict(dtype=(int, np.integer),
-                help='How often to save the model [unit=epochs]'),
-    'valid_freq': dict(dtype=(int, np.integer),
-                help='How often to calculate the validation loss [unit=epochs]'),
-    'batch_size': dict(dtype=(int, np.integer),
-                help='Batch size.  The same value is used for train, validation, and evaluation'),
-    'num_workers': dict(dtype=(int, np.integer),
-                help='Workers in the DataLoader.  See train_util.py'),
-    'epochs': dict(dtype=(int, np.integer),
-                help='Number of epochs for training.'),
-    'learning_rate': dict(dtype=float,
-                help='Learning rate parameter'),
-    'lr_decay_epochs': dict(dtype=list,
-                help='Learning rate decay parameters'),
-    'lr_decay_rate': dict(dtype=float,
-                help='Learning rate decay rate'),
-    'feat_dim': dict(dtype=(int, np.integer),
-                help='Dimensionality of latent space'),
-    'weight_decay': dict(dtype=float,
-                help='Decay parameter in optimizer'),
-    'momentum': dict(dtype=float,
-                help='Momentum parameter in optimizer'),
-    'nenya_model': dict(dtype=str,
-                help='Model for Nenya'),
-    'nenya_method': dict(dtype=str,
-                help='Method for Nenya'),
-    'model_root': dict(dtype=str,
-                help='Root name of the model.  Used for the file tree'),
-    'model_name': dict(dtype=str,
-                help='Name of the specific model.  Based on parameters'),
+    'field_size': dict(dtype=(int, np.integer),
+                help='Size of the cutout side (pixels)'),
+    'lat': dict(dtype=(float,np.floating),
+                help='Latitude of the center of the cutout (deg)'),
+    'lon': dict(dtype=(float,np.floating),
+                help='Longitude of the center of the cutout (deg)'),
+    'col': dict(dtype=(int, np.integer),
+                help='Column of lower-left corner of the cutout in the granule'),
+    'row': dict(dtype=(int, np.integer),
+                help='Row of lower-left corner of the cutout in the granule'),
+    'filename': dict(dtype=str,
+                help='Filename of the original data file from which the cutout was extracted'),
+    'ex_filename': dict(dtype=str,
+                help='Filename of the extraction file holding the cutouts'),
+    'datetime': dict(dtype=pandas.Timestamp,
+                help='Timestamp of the cutout'),
+    'LL': dict(dtype=(float,np.floating),
+                help='Log-likelihood of the cutout from Ulmo'),
+    'clear_fraction': dict(dtype=float,
+                help='Fraction of the cutout clear from clouds'),
+    'mu': dict(dtype=(float,np.floating),
+                help='Average SSHa of the cutout'),
+    'Tmin': dict(dtype=(float,np.floating),
+                help='Minimum T of the cutout (C deg)'),
+    'Tmax': dict(dtype=(float,np.floating),
+                help='Maximum T of the cutout (C deg)'),
+    'T10': dict(dtype=(float,np.floating),
+                help='10th percentile of T of the cutout (C deg)'),
+    'T90': dict(dtype=(float,np.floating),
+                help='90th percentile of T of the cutout'),
+    'DT': dict(dtype=(float,np.floating),
+                help='90th percentile of T of the cutout (C deg)'),
+    'DT40': dict(dtype=(float,np.floating),
+                help='DT for inner 40x40 pixels'),
+    'pp_root': dict(dtype=str,
+                help='Describes the pre-processing steps applied'),
+    'pp_file': dict(dtype=str,
+                help='Filename of the pre-processed file holding the cutout'),
+    'pp_idx': dict(dtype=(int,np.integer), 
+                help='Index describing position of the cutout in the pp_file'),
+    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0,1), 
+                    valid=0, train=1, init=-1,
+                    help='-1: illdefined, 0: valid, 1: train'),
+                    # In Ulmo, we use 1 for the subset of training and 0 for the rest
+                    # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
     'images_file': dict(dtype=str,
                 help='Name of the images file, likely hdf5'),
     'data_folder': dict(dtype=str,
                 help='Path to the images_file'),
-    'model_folder': dict(dtype=str,
-                help='Full path to folder for saving models'),
-    'latents_folder': dict(dtype=str,
-                help='Full path to folder for saving latents files'),
     'train_key': dict(dtype=str,
                 help='Dataset for training'),
     'valid_key': dict(dtype=str,
                 help='Dataset for validation'),
     's3_outdir': dict(dtype=str,
                 help='s3 bucket+path for model output'),
-    'temp': dict(dtype=float,
-                help='Temperature parameter in Loss function'),
-    'cosine': dict(dtype=bool,
-                help='??'),
-    'syncBN': dict(dtype=bool,
-                help='Enable synchronization of Batch Normalization?'),
-    'warm': dict(dtype=bool,
-                help='??'),
-    'warmup_from': dict(dtype=float,
-                help='??'),
-    'warmup_to': dict(dtype=float,
-                help='??'),
-    'warm_epochs': dict(dtype=(int, np.integer),
-                help='Number of epochs for warming up'),
-    'trial': dict(dtype=(int, np.integer),
-                help='Index for labeling the model'),
-    'random_jitter': dict(dtype=list,
-                help='x,y jitter parameters'),
-    'gauss_noise': dict(dtype=float,
-                help='RMS for injected Gaussian noise'),
-    'modis_data': dict(dtype=bool,
-                help='MODIS data?'),
-    'cuda_use': dict(dtype=bool,
-                help='Use CUDA in the analysis, if possible'),
+    # REQUIRED
+    'required': ('lat', 'lon', 'datetime')
 }
-
-# Geography
-geo_regions = {}
-geo_regions['coastalcali'] = dict(
-    lons=[-128, -118.],   # W
-    lats=[32, 40])    # Equitorial 
-geo_regions['eqpacific'] = dict(
-    lons=[-140, -90.],   # W
-    lats=[-5, 5.])    # Equitorial 
-geo_regions['eqindian'] = dict(
-    lons=[60, 90.],   # E
-    lats=[-5, 5.])    # Equitorial 
-geo_regions['baybengal'] = dict(
-    lons=[79, 95.],   # E
-    lats=[16, 23.])    # N
-geo_regions['gulfstream'] = dict(
-    lons=[-70, -40.],   # W
-    lats=[40, 50.])    # N
-geo_regions['med'] = dict(
-    lons=[0, 20.],   # E
-    lats=[30, 45.])    # N
-geo_regions['south_atlantic'] = dict(
-    lons=[-35, 10.],   # W (Pretty crude)
-    lats=[-30, -20.])      # N
-geo_regions['south_pacific'] = dict(
-    lons=[-140, -90.],   # W (Pretty crude)
-    lats=[-30, -20.])      # S
-geo_regions['global'] = dict(
-    lons=[-999., 999.],   # E
-    lats=[-999, 999.])    # N
-geo_regions['north'] = dict(
-    lons=[-999., 999.],   # E
-    lats=[0, 999.])    # N
