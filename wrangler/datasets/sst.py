@@ -34,7 +34,7 @@ class VIIRS_N20(VIIRS):
 
 class VIIRS_N21(VIIRS):
     """ VIIRS NPP Dataset """
-    name = 'VIIRS_N20'
+    name = 'VIIRS_N21'
     podaac_collection = 'N21-VIIRS-L2P-ACSPO-v2.80'
     
     def __init__(self):

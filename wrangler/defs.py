@@ -4,6 +4,28 @@ import numpy as np
 import pandas
 
 # Wrangler options
+
+# Wrangle extraction options
+
+ex_dmodel = {
+    'field_size': dict(dtype=(int, np.integer),
+                help='Size of the cutout side (pixels)'),
+    'clear_threshold': dict(dtype=(int, np.integer),
+                help='Threshold for clear fraction (percent)'),
+    'nadir_offset': dict(dtype=(int, np.integer),
+                help='Offset from nadir for cutout center'),
+    'temp_bounds': dict(dtype=(float,np.floating),
+                help='Temperature bounds for cutout'),
+    'nrepeat': dict(dtype=(int, np.integer),
+                help='Number of times to repeat extraction'),
+    'sub_grid_step': dict(dtype=(int, np.integer),
+                help='Fraction of field-size to use for sub-gridding'),
+    'inpaint': dict(dtype=bool,
+                help='Inpaint the cutout'),
+}
+    
+
+# Wrangler table data model
 tbl_dmodel = {
     'field_size': dict(dtype=(int, np.integer),
                 help='Size of the cutout side (pixels)'),

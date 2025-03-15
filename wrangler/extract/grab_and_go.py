@@ -107,7 +107,9 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
 
     Args:
         dataset (str): Name of the dataset
+            e.g. 'VIIRS_NPP'
         tstart (str): Start time in ISO format
+            e.g. '2020-01-01T00:00:00'
         tend (str): End time in ISO format
         eoption_file (str): Filename of the extraction options
         ex_file (str): Filename of the extraction file

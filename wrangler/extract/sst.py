@@ -144,9 +144,9 @@ def extract_file(filename:str,
         filename (str): VIIRS datafile with path
         aiost_ds (AIOS_DataSet): AIOS dataset
             Required!
-        field_size (tuple, optional): [description]. Defaults to (128,128).
-        nadir_offset (int, optional): [description]. Defaults to 480.
-            Zero means none.
+        field_size (tuple, optional): Size of the cutout side (pixels)
+        nadir_offset (int, optional): Maximum offset from nadir for cutout center.
+            Zero means any nadir pixel is valid
         CC_max (float, optional): [description]. Defaults to 0.05.
         qual_thresh (int, optional): [description]. Defaults to 2.
         lower_qual (bool, optional): 
