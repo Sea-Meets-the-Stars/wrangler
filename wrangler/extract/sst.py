@@ -194,7 +194,8 @@ def extract_file(filename:str,
         CC_max=CC_max, nsgrid_draw=nrepeat,
         sub_grid_step=sub_grid_step)
     if rows is None:
-        return None
+        print(f"No clear fields for {filename}")
+        return None, None, None, None
 
     # Extract
     fields, inpainted_masks = [], []

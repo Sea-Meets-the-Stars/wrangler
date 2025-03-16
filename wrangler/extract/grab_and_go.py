@@ -69,7 +69,7 @@ async def extract(aios_ds, local_files:str,
         items = map_fn(local_file)
         import pdb; pdb.set_trace()
 
-    # Multi-process
+    # Multi-process on ex_sst.extract_file
     metadata = None
     with ProcessPoolExecutor(max_workers=n_cores) as executor:
         chunksize = len(local_files) // n_cores if len(local_files) // n_cores > 0 else 1
@@ -77,8 +77,10 @@ async def extract(aios_ds, local_files:str,
                                             chunksize=chunksize), 
                             total=len(local_files)))
     # Trim None's
-    answers = [f for f in answers if f is not None]
+    answers = [f for f in answers if f[0] is not None]
+
     # Unpack
+    import pdb; pdb.set_trace()
     fields = np.concatenate([item[0] for item in answers])
     inpainted_masks = np.concatenate([item[1] for item in answers])
     metadata = np.concatenate([item[2] for item in answers])
@@ -113,12 +115,14 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         tend (str): End time in ISO format
         eoption_file (str): Filename of the extraction options
         ex_file (str): Filename of the extraction file
+            e.g. 'ex_VIIRS_NPP_2020.h5'
         tbl_file (str): Filename of the table file
         n_cores (int): Number of cores to use
         tdelta (dict, optional): Time delta. Defaults to {'days':1}.
         verbose (bool, optional): Print verbose output. Defaults to True.
         debug (bool, optional): Debug mode. Defaults to False.
         save_local_files (bool, optional): Save local files. Defaults to False.
+            These are the files downloaded from the remote server
 
     Returns:
         None
