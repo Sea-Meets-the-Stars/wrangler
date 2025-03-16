@@ -160,6 +160,10 @@ def extract_file(filename:str,
 
     Returns:
         tuple: raw_SST, inpainted_mask, metadata, time
+            raw_SST: np.ndarray
+            inpainted_mask: np.ndarray
+            metadata: list
+            time: np.datetime64
     """
 
     # Load the image
@@ -224,4 +228,6 @@ def extract_file(filename:str,
     if len(fields) == 0:
         print(f"No fields for: {filename}")
         return None, None, None, None
+
+    # Return
     return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
