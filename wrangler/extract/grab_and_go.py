@@ -23,7 +23,10 @@ from wrangler.tables import io as tbl_io
 
 from IPython import embed
 
-async def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
+async def async_grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
+    pass
+
+def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
     """
     Asynchronously grabs and optionally downloads files from a specified data source within a given time range.
 
@@ -58,11 +61,13 @@ async def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
     # Return
     return local_files
 
-async def extract(aios_ds, local_files:str,
+
+def extract(aios_ds, local_files:str,
                   exdict:dict, n_cores:int,
                   debug:bool=False,
                   single:bool=False,
-                  verbose:bool=True):
+                  verbose:bool=True,
+                  async_me:bool=True):
     """
     Extracts data from local files using the specified parameters.
 
@@ -81,6 +86,7 @@ async def extract(aios_ds, local_files:str,
         debug (bool, optional): Flag to enable debugging mode. Defaults to False.
         single (bool, optional): Flag to enable single process mode. Defaults to False.
         verbose (bool, optional): Flag to enable verbose output. Defaults to True.
+        async_me (bool, optional): Flag to enable asynchronous processing. Defaults to True.
 
     Returns:
         tuple: A tuple containing the following elements:
@@ -136,10 +142,19 @@ async def extract(aios_ds, local_files:str,
     # Return
     return fields, inpainted_masks, metadata, times
 
-async def run(dataset:str, tstart, tend, eoption_file:str,
+async def async_run(dataset:str, tstart, tend, eoption_file:str,
               ex_file:str, tbl_file:str,
               n_cores:int, tdelta:dict={'days':1}, 
               verbose:bool=True, debug:bool=False, 
+              debug_noasync:bool=False,
+              save_local_files:bool=False):
+    return run(dataset, tstart, tend, eoption_file, ex_file, tbl_file, n_cores, tdelta, verbose, debug, debug_noasync, save_local_files)
+
+def run(dataset:str, tstart, tend, eoption_file:str,
+              ex_file:str, tbl_file:str,
+              n_cores:int, tdelta:dict={'days':1}, 
+              verbose:bool=True, debug:bool=False, 
+              debug_noasync:bool=False,
               save_local_files:bool=False):
     """ Grab and extract data from a dataset in one go
 
@@ -168,6 +183,7 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         tdelta (dict, optional): Time delta. Defaults to {'days':1}.
         verbose (bool, optional): Print verbose output. Defaults to True.
         debug (bool, optional): Debug mode. Defaults to False.
+        debug_noasync (bool, optional): Debug without async. Defaults to False.
         save_local_files (bool, optional): Save local files. Defaults to False.
             These are the files downloaded from the remote server
 
@@ -210,10 +226,12 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
 
         # Start the grab asynchronous
         if t1 <= tend:
-            igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
-            # Wait for it
-            print("Waiting for downloads to finish...")
-            local_files = await igrab
+            #if not debug_noasync:
+            #    igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
+            #    # Wait for it
+            #    print("Waiting for downloads to finish...")
+            #    local_files = await igrab
+            local_files = grab(aios_ds, t0s, t1s)
         else:
             time_to_break = True
         #import pdb; pdb.set_trace()
@@ -222,7 +240,8 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         # Wait for the previous process to end
         if iproc is not None:
             print("Waiting for processing to finish...")
-            fields, inpainted_masks, imetadata, itimes  = await iproc
+            #if not debug_noasync:
+            #    fields, inpainted_masks, imetadata, itimes  = await iproc
             times.append(itimes)
             # Write
             if first_time:
@@ -254,9 +273,15 @@ async def run(dataset:str, tstart, tend, eoption_file:str,
         # Process
         if time_to_break:
             break
+
         print("Starting extraction")
-        iproc = asyncio.create_task(extract(aios_ds, local_files,
-                                            exdict, n_cores, debug=debug))
+        if not debug_noasync:
+            pass
+        #    iproc = asyncio.create_task(extract(aios_ds, local_files,
+        #                                    exdict, n_cores, debug=debug))
+        else:
+            fields, inpainted_masks, imetadata, itimes  = extract(aios_ds, local_files,
+                                            exdict, n_cores, debug=debug)
 
         # Increment
         t0 += tdelta

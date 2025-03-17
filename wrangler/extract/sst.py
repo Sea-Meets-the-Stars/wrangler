@@ -208,14 +208,26 @@ def extract_file(filename:str,
         # Inpaint?
         field = dfield[r:r+field_size[0], c:c+field_size[1]]
         mask = masks[r:r+field_size[0], c:c+field_size[1]]
+        assert field.shape == mask.shape, "Field and mask shapes don't match"
         if inpaint:
             inpainted, _ = pp_field.main(field, mask, only_inpaint=True)
         if inpainted is None:
             continue
+
         # Null out the non inpainted (to preseve memory when compressed)
-        inpainted[~mask] = np.nan
-        # Append SST raw + inpainted
+        assert inpainted.shape == mask.shape, "Inpainted and mask shapes don't match"
+        #inpainted[np.invert(mask)] = np.nan
+        try:
+            inpainted[~mask] = np.nan
+        except:
+            print('inpainted.shape:', inpainted.shape)
+            print('mask.shape:', mask.shape)
+            print('mask:', mask)
+            import pdb; pdb.set_trace()
+
         fields.append(field.astype(np.float32))
+
+        # Append SST raw + inpainted
         inpainted_masks.append(inpainted)
         # meta
         row, col = r, c + lb
