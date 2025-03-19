@@ -255,7 +255,7 @@ def run(dataset:str, tstart, tend, eoption_file:str,
             # Fill
             f_h5['fields'][-fields.shape[0]:] = fields
             f_h5['inpainted_masks'][-fields.shape[0]:] = inpainted_masks
-            metadata += imetadata
+            metadata = np.concatenate([metadata, imetadata])
             second_time = True
     
         # Delete the local files
