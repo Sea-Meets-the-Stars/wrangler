@@ -66,8 +66,7 @@ def extract(aios_ds, local_files:str,
                   exdict:dict, n_cores:int,
                   debug:bool=False,
                   single:bool=False,
-                  verbose:bool=True,
-                  async_me:bool=True):
+                  verbose:bool=True):
     """
     Extracts data from local files using the specified parameters.
 
@@ -86,7 +85,6 @@ def extract(aios_ds, local_files:str,
         debug (bool, optional): Flag to enable debugging mode. Defaults to False.
         single (bool, optional): Flag to enable single process mode. Defaults to False.
         verbose (bool, optional): Flag to enable verbose output. Defaults to True.
-        async_me (bool, optional): Flag to enable asynchronous processing. Defaults to True.
 
     Returns:
         tuple: A tuple containing the following elements:
@@ -130,8 +128,8 @@ def extract(aios_ds, local_files:str,
     answers = [f for f in answers if f[0] is not None]
 
     # Unpack
-    if debug:
-        import pdb; pdb.set_trace()
+    #if debug:
+    #    import pdb; pdb.set_trace()
     fields = np.concatenate([item[0] for item in answers])
     inpainted_masks = np.concatenate([item[1] for item in answers])
     metadata = np.concatenate([item[2] for item in answers])
@@ -212,6 +210,7 @@ def run(dataset:str, tstart, tend, eoption_file:str,
 
     times = []
     first_time = True
+    second_time = False
     time_to_break = False
     while True:  # yes this is crazy
         # Increment
@@ -224,70 +223,60 @@ def run(dataset:str, tstart, tend, eoption_file:str,
         if verbose:
             print(f"Working on {t0}")
 
-        # Start the grab asynchronous
+        # Grab 
         if t1 <= tend:
-            #if not debug_noasync:
-            #    igrab = asyncio.create_task(grab(aios_ds, t0s, t1s))
-            #    # Wait for it
-            #    print("Waiting for downloads to finish...")
-            #    local_files = await igrab
             local_files = grab(aios_ds, t0s, t1s)
         else:
             time_to_break = True
-        #import pdb; pdb.set_trace()
-        #embed(header='104 of grab_and_go') 
-
-        # Wait for the previous process to end
-        if iproc is not None:
-            print("Waiting for processing to finish...")
-            #if not debug_noasync:
-            #    fields, inpainted_masks, imetadata, itimes  = await iproc
-            times.append(itimes)
-            # Write
-            if first_time:
-                f_h5.create_dataset('fields', data=fields, 
-                                    compression="gzip", chunks=True,
-                                    maxshape=(None, fields.shape[1], fields.shape[2]))
-                f_h5.create_dataset('inpainted_masks', data=inpainted_masks,
-                                    compression="gzip", chunks=True,
-                                    maxshape=(None, inpainted_masks.shape[1], inpainted_masks.shape[2]))
-                metadata = imetadata
-                first_time = False
-            else:
-                # Resize
-                for key in ['fields', 'inpainted_masks']:
-                    f_h5[key].resize((f_h5[key].shape[0] + fields.shape[0]), axis=0)
-                # Fill
-                f_h5['fields'][-fields.shape[0]:] = fields
-                f_h5['inpainted_masks'][-fields.shape[0]:] = inpainted_masks
-                metadata += imetadata
-        
-            # Delete the local files
-            if not save_local_files:
-                for local_file in previous_local_files:
-                    os.remove(local_file)
 
         # Hold the local_files for removing
         previous_local_files = [ifile for ifile in local_files]
+
+
+        print("Starting extraction")
+        fields, inpainted_masks, imetadata, itimes  = extract(aios_ds, local_files,
+                                            exdict, n_cores, debug=debug)
+        times.append(itimes)
+
+        # Write
+        if first_time:
+            f_h5.create_dataset('fields', data=fields, 
+                                compression="gzip", chunks=True,
+                                maxshape=(None, fields.shape[1], fields.shape[2]))
+            f_h5.create_dataset('inpainted_masks', data=inpainted_masks,
+                                compression="gzip", chunks=True,
+                                maxshape=(None, inpainted_masks.shape[1], inpainted_masks.shape[2]))
+            metadata = imetadata
+            first_time = False
+        else:
+            # Resize
+            for key in ['fields', 'inpainted_masks']:
+                f_h5[key].resize((f_h5[key].shape[0] + fields.shape[0]), axis=0)
+            # Fill
+            f_h5['fields'][-fields.shape[0]:] = fields
+            f_h5['inpainted_masks'][-fields.shape[0]:] = inpainted_masks
+            metadata += imetadata
+            second_time = True
+    
+        # Delete the local files
+        if not save_local_files:
+            for local_file in previous_local_files:
+                os.remove(local_file)
 
         # Process
         if time_to_break:
             break
 
-        print("Starting extraction")
-        if not debug_noasync:
-            pass
-        #    iproc = asyncio.create_task(extract(aios_ds, local_files,
-        #                                    exdict, n_cores, debug=debug))
-        else:
-            fields, inpainted_masks, imetadata, itimes  = extract(aios_ds, local_files,
-                                            exdict, n_cores, debug=debug)
-
         # Increment
         t0 += tdelta
 
+        if debug and second_time:
+            break
+
     # Finish
     # Metadata
+    #if debug:
+    #    embed(header='277 of grab_and_go')
     columns = ['filename', 'row', 'column', 'latitude', 'longitude', 
                'clear_fraction']
     dset = f_h5.create_dataset('metadata', data=np.concatenate(metadata).astype('S'))
@@ -306,8 +295,8 @@ def run(dataset:str, tstart, tend, eoption_file:str,
     table['field_size'] = exdict['field_size']
 
     # Time
-    if debug:
-        import pdb; pdb.set_trace()
+    #if debug:
+    #    import pdb; pdb.set_trace()
     table['datetime'] = np.concatenate(times)
     # Output filename
     table['ex_filename'] = ex_file
