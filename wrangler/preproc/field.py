@@ -8,6 +8,8 @@ from scipy import special
 from skimage.transform import downscale_local_mean, resize_local_mean
 from skimage import filters
 
+from IPython import embed
+
 
 def main(field, mask, inpaint=False, 
          median=False, med_size=(3,1),

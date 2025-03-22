@@ -111,6 +111,7 @@ def extract(aios_ds, local_files:str,
         raise ValueError("Only SST datasets supported so far")
 
 
+    #single=True
     if debug and single:
         # Single process
         local_file = local_files[0]
@@ -130,6 +131,9 @@ def extract(aios_ds, local_files:str,
     # Unpack
     #if debug:
     #    import pdb; pdb.set_trace()
+    if len(answers) == 0:
+        return None, None, None, None
+
     fields = np.concatenate([item[0] for item in answers])
     inpainted_masks = np.concatenate([item[1] for item in answers])
     metadata = np.concatenate([item[2] for item in answers])
@@ -236,6 +240,18 @@ def run(dataset:str, tstart, tend, eoption_file:str,
         print("Starting extraction")
         fields, inpainted_masks, imetadata, itimes  = extract(aios_ds, local_files,
                                             exdict, n_cores, debug=debug)
+        if fields is None:
+            print("No fields extracted")
+            if time_to_break:
+                break
+            t0 += tdelta
+            continue
+
+        #if debug:
+        #    from wrangler.plotting import cutout
+        #    embed(header='Debugging extraction')
+
+        # 
         times.append(itimes)
 
         # Write

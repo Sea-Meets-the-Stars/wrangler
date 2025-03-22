@@ -28,6 +28,7 @@ def clear_grid(mask, field_size, method, CC_max=0.05,
     Parameters
     ----------
     mask : np.ndarray
+        1 = bad (cloudy), 0 = good (clear)
     field_size : int
     method : str
         'random'
@@ -176,8 +177,8 @@ def extract_file(filename:str,
     if dfield is None:
         return
 
-    # Generate the masks
-    masks = rs_nc_utils.build_mask(dfield, qual, 
+    # Generate the mask (True = bad)
+    mask = rs_nc_utils.build_mask(dfield, qual, 
                                 qual_thresh=qual_thresh,
                                 temp_bounds=temp_bounds, 
                                 lower_qual=lower_qual)
@@ -188,56 +189,58 @@ def extract_file(filename:str,
         lb = nadir_pix - nadir_offset
         ub = nadir_pix + nadir_offset
         dfield = dfield[:, lb:ub]
-        masks = masks[:, lb:ub].astype(np.uint8)
+        mask = mask[:, lb:ub].astype(np.uint8)
     else:
         lb = 0
 
     # Random clear rows, cols
     rows, cols, clear_fracs = clear_grid(
-        masks, field_size[0], 'center', 
+        mask, field_size[0], 'center', 
         CC_max=CC_max, nsgrid_draw=nrepeat,
         sub_grid_step=sub_grid_step)
     if rows is None:
         print(f"No clear fields for {filename}")
         return None, None, None, None
 
+
     # Extract
-    fields, inpainted_masks = [], []
+    fields, inpainted_mask = [], []
     metadata = []
     for r, c, clear_frac in zip(rows, cols, clear_fracs):
         # Inpaint?
         field = dfield[r:r+field_size[0], c:c+field_size[1]]
-        mask = masks[r:r+field_size[0], c:c+field_size[1]].astype(bool)
+        imask = mask[r:r+field_size[0], c:c+field_size[1]].astype(bool)
+        #embed(header='Extracting fields from %s' % filename)
         if inpaint:
-            inpainted, _ = pp_field.main(field, mask, only_inpaint=True)
+            inpainted, _ = pp_field.main(field, imask, inpaint=True, only_inpaint=True)
         if inpainted is None:
             continue
 
         # Null out the non inpainted (to preseve memory when compressed)
-        inpainted[np.invert(mask)] = np.nan
+        inpainted[np.invert(imask)] = np.nan
         #try:
-        #    inpainted[~mask] = np.nan
+        #    inpainted[~imask] = np.nan
         #except:
         #    print('inpainted.shape:', inpainted.shape)
-        #    print('mask.shape:', mask.shape)
-        #    print('mask:', mask)
+        #    print('imask.shape:', imask.shape)
+        #    print('imask:', imask)
         #    import pdb; pdb.set_trace()
 
         fields.append(field.astype(np.float32))
 
         # Append SST raw + inpainted
-        inpainted_masks.append(inpainted)
+        inpainted_mask.append(inpainted)
         # meta
         row, col = r, c + lb
         lat = latitude[row + field_size[0] // 2, col + field_size[1] // 2]
         lon = longitude[row + field_size[0] // 2, col + field_size[1] // 2]
         metadata.append([filename, str(row), str(col), str(lat), str(lon), str(clear_frac)])
 
-    del dfield, masks
+    del dfield, mask
 
     if len(fields) == 0:
         print(f"No fields for: {filename}")
         return None, None, None, None
 
     # Return
-    return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
+    return np.stack(fields), np.stack(inpainted_mask), np.stack(metadata), time
