@@ -9,6 +9,7 @@ from remote_sensing.netcdf import utils as rs_nc_utils
 
 from wrangler.datasets.base import AIOS_DataSet
 from wrangler.preproc import field as pp_field
+from wrangler import utils as wr_utils
 
 #from ulmo.viirs import io as viirs_io 
 #from ulmo.preproc import utils as pp_utils
@@ -135,16 +136,14 @@ def extract_file(filename:str,
                  nrepeat=1,
                  sub_grid_step=2,
                  lower_qual=False,
-                 inpaint=True, debug=False):
+                 inpaint=True, debug=False,
+                 grow_mask:float=0):
     """Method to extract a single file.
     Usually used in parallel
 
-    This is very similar to the MODIS routine
-
     Args:
-        filename (str): VIIRS datafile with path
+        filename (str): datafile with path
         aiost_ds (AIOS_DataSet): AIOS dataset
-            Required!
         field_size (tuple, optional): Size of the cutout side (pixels)
         nadir_offset (int, optional): Maximum offset from nadir for cutout center.
             Zero means any nadir pixel is valid
@@ -157,6 +156,7 @@ def extract_file(filename:str,
         sub_grid_step (int, optional):  Sets how finely to sample the image.
             Larger means more finely
         inpaint (bool, optional): [description]. Defaults to True.
+        grow_mask (int, optional): [description]. Defaults to 0.
         debug (bool, optional): [description]. Defaults to False.
 
     Returns:
@@ -182,6 +182,10 @@ def extract_file(filename:str,
                                 qual_thresh=qual_thresh,
                                 temp_bounds=temp_bounds, 
                                 lower_qual=lower_qual)
+
+    # Grow the mask?
+    if grow_mask > 0:
+        mask = wr_utils.grow_mask(mask, grow_mask)
 
     # Restrict to near nadir
     nadir_pix = dfield.shape[1] // 2
