@@ -104,6 +104,7 @@ def extract(aios_ds, local_files:str,
                      CC_max=1.-exdict['clear_threshold'] / 100.,
                      nadir_offset=exdict['nadir_offset'],
                      temp_bounds=tuple(exdict['temp_bounds']),
+                     grow_mask=exdict['grow_mask'],
                      nrepeat=exdict['nrepeat'],
                      sub_grid_step=exdict['sub_grid_step'],
                      inpaint=exdict['inpaint'])

@@ -183,10 +183,6 @@ def extract_file(filename:str,
                                 temp_bounds=temp_bounds, 
                                 lower_qual=lower_qual)
 
-    # Grow the mask?
-    if grow_mask > 0:
-        mask = wr_utils.grow_mask(mask, grow_mask)
-
     # Restrict to near nadir
     nadir_pix = dfield.shape[1] // 2
     if nadir_offset > 0:
@@ -206,6 +202,11 @@ def extract_file(filename:str,
         print(f"No clear fields for {filename}")
         return None, None, None, None
 
+    # Grow the mask?
+    #   We do this after the clear fraction to preserve the 
+    #   results from previous work (Ulmo, Nenya, etc.)
+    if grow_mask > 0:
+        mask = wr_utils.grow_mask(mask, grow_mask)
 
     # Extract
     fields, inpainted_mask = [], []
