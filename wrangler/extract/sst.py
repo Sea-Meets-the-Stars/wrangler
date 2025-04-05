@@ -170,12 +170,16 @@ def extract_file(filename:str,
     # Load the image
     #embed(header='51 of extract_file')
     if aios_ds.field == 'SST':
-        dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=False)
+        try:
+            dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=False)
+        except OSError as e:
+            print(f"Error loading file {filename}: {e}")
+            return None, None, None, None
     else:
         raise ValueError("Only SST datasets supported so far")
 
     if dfield is None:
-        return
+        return None, None, None, None
 
     # Generate the mask (True = bad)
     mask = rs_nc_utils.build_mask(dfield, qual, 

@@ -60,11 +60,12 @@ def download_file_from_s3(local_file:str, s3_uri:str,
 def upload_file_to_s3(local_file:str, s3_uri:str):
     """Upload a single file to s3 storage
 
+    # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-uploading-files.html
+
     Args:
         local_file (str): path to local file
         s3_uri (str): URL for s3 file 
     """
-    # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-uploading-files.html
     parsed_s3 = urlparse(s3_uri)
     s3.meta.client.upload_file(local_file,
                              parsed_s3.netloc, 
