@@ -3,7 +3,7 @@ import os
 from io import BytesIO
 import pandas
 
-from wrangler import io as wrangler_io
+from wrangler import s3_io as wrangler_io
 
 
 def load_main_table(tbl_file:str, verbose=True):
