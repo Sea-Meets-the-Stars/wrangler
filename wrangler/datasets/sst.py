@@ -8,6 +8,8 @@ class SST(AIOS_DataSet):
     def __init__(self):
         super().__init__()
 
+# VIIRS Datasets
+
 class VIIRS(SST):
     """ Parent for VIIRS Datasets """
     source = 'PODAAC'
@@ -36,6 +38,24 @@ class VIIRS_N21(VIIRS):
     """ VIIRS NPP Dataset """
     name = 'VIIRS_N21'
     podaac_collection = 'N21-VIIRS-L2P-ACSPO-v2.80'
+    
+    def __init__(self):
+        super().__init__()
+
+# Himawari Datasets
+
+class H09(SST):
+    """ Parent for Himawari Datasets """
+    source = 'PODAAC'
+    quality_level = 5
+
+    def __init__(self):
+        super().__init__()
+
+class H09_L3C(H09):
+    """ Himawari Level 3 Dataset """
+    name = 'H09_L3C'
+    podaac_collection = 'H09-AHI-L3C-ACSPO-v2.90'
     
     def __init__(self):
         super().__init__()

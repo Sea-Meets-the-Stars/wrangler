@@ -33,7 +33,9 @@ def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
     Parameters:
         aios_ds (object): An object containing dataset information, including the source and collection details.
         t0 (datetime): The start time of the time range for which files are to be grabbed.
+            e.g. '2020-01-01T00:00:00'
         t1 (datetime): The end time of the time range for which files are to be grabbed.
+            e.g. '2020-01-02T00:00:00'
         verbose (bool, optional): If True, enables verbose output. Defaults to True.
         skip_download (bool, optional): If True, skips the download step (useful for testing). Defaults to False.
 
@@ -207,7 +209,6 @@ def run(dataset:str, tstart, tend, eoption_file:str,
 
     # Begin downloading
     t0 = tstart
-    iproc = None
 
     # Local file for writing
     f_h5 = h5py.File(ex_file, 'w')
