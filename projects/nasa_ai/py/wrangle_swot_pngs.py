@@ -32,6 +32,7 @@ def wrangle_one_pass(ipass:int, path:str=None,
     for kk, ifile in enumerate(files):
         if debug and kk > 2:
             break
+        print(f'Processing {kk+1}/{len(files)}')
         # Read the image
         img = mpimg.imread(ifile)
         # Indices
