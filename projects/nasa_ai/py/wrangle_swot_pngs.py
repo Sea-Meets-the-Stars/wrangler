@@ -97,7 +97,7 @@ def main(flg):
 
     # Pass 003 only
     if flg == 3:
-        wrangle_one_pass(3, debug=True)
+        wrangle_one_pass(3)#, debug=True)
 
 # Command line execution
 if __name__ == '__main__':
