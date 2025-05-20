@@ -63,6 +63,10 @@ def wrangle_one_pass(ipass:int, path:str=None,
     col = np.array(col, dtype=np.int32)
     sv_files = np.array(sv_files, dtype='S100')
 
+    # Split into valid and train
+    ntrain = int(all_imgs.shape[0] * 0.8)
+    nvalid = all_imgs.shape[0] - ntrain
+
     # Create a simple table of metadata
     df = pandas.DataFrame()
     df['filename'] = sv_files
@@ -71,6 +75,7 @@ def wrangle_one_pass(ipass:int, path:str=None,
     df['idx2'] = idx2
     df['row'] = row
     df['col'] = col
+    df['ptype'] = [1]*ntrain + [0]*nvalid
 
     # Write to disk as h5py
     outf = os.path.join(path, f'Pass_{ipass:03d}.h5')
@@ -78,13 +83,10 @@ def wrangle_one_pass(ipass:int, path:str=None,
 
     #embed(header='Check 51')
 
+
     with h5py.File(outf, 'w') as f:
-        f.create_dataset('imgs', data=all_imgs)
-        # Add the metadata
-        #dset = f.create_dataset('metadata', 
-        #                        data=df.to_numpy(dtype=str).astype('S'))
-        #dset.attrs['columns'] = clms
-        #f.create_dataset('metadata', data=df)
+        f.create_dataset('train', data=all_imgs[:ntrain])
+        f.create_dataset('valid', data=all_imgs[ntrain:])
     print(f'Wrote {outf} with {all_imgs.shape[0]} images of size {all_imgs.shape[1:]}')
 
     # Write table
