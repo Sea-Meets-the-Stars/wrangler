@@ -63,6 +63,9 @@ def wrangle_one_pass(ipass:int, path:str=None,
     col = np.array(col, dtype=np.int32)
     sv_files = np.array(sv_files, dtype='S100')
 
+    # Add a channel to all_imgs
+    all_imgs = np.expand_dims(all_imgs, axis=1)
+
     # Split into valid and train
     ntrain = int(all_imgs.shape[0] * 0.8)
     nvalid = all_imgs.shape[0] - ntrain
@@ -100,7 +103,7 @@ def main(flg):
 
     # Pass 003 only
     if flg == 3:
-        wrangle_one_pass(3)#, debug=True)
+        wrangle_one_pass(3, debug=True)
 
 # Command line execution
 if __name__ == '__main__':
