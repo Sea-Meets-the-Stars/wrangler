@@ -14,7 +14,8 @@ from IPython import embed
 
 
 def wrangle_one_pass(ipass:int, path:str=None,
-                     npix:int=55, debug:bool=False):
+                     npix:int=55, debug:bool=False,
+                     ntotal:int=None):
     if path is None:
         path = os.getenv('SWOT_PNGs')
 
@@ -29,8 +30,13 @@ def wrangle_one_pass(ipass:int, path:str=None,
     idx0, idx1, idx2 = [], [], []
     row, col = [], []
     sv_files = []
+    if ntotal is None:
+        ntotal = 100000000
+
+    break_me = False
+    count = 0
     for kk, ifile in enumerate(files):
-        if debug and kk > 2:
+        if (debug and kk > 2) or break_me:
             break
         print(f'Processing {kk+1}/{len(files)}')
         # Read the image
@@ -40,6 +46,8 @@ def wrangle_one_pass(ipass:int, path:str=None,
         # 
         sub_imgs = []
         for irow in range(img.shape[0]//npix):
+            if break_me:
+                break
             for jcol in range(img.shape[1]//npix):
                 sub_imgs.append(img[irow*npix:(irow+1)*npix, jcol*npix:(jcol+1)*npix, 0])
                 #
@@ -51,10 +59,17 @@ def wrangle_one_pass(ipass:int, path:str=None,
                 col.append(jcol)
                 # File
                 sv_files.append(ifile)
+                count += 1
+                # Break?
+                if count >= ntotal:
+                    break_me = True
+                    break
+
         all_imgs.append(np.array(sub_imgs))
 
     # Stack the images
     all_imgs = np.concatenate(all_imgs)#, axis=0)
+
     # Recast
     idx0 = np.array(idx0, dtype=np.int32)
     idx1 = np.array(idx1, dtype=np.int32)
@@ -90,7 +105,7 @@ def wrangle_one_pass(ipass:int, path:str=None,
     with h5py.File(outf, 'w') as f:
         f.create_dataset('train', data=all_imgs[:ntrain])
         f.create_dataset('valid', data=all_imgs[ntrain:])
-    print(f'Wrote {outf} with {all_imgs.shape[0]} images of size {all_imgs.shape[1:]}')
+    print(f'Wrote {outf} with ntrain= {ntrain} and nvalid = {nvalid}')
 
     # Write table
     df.to_parquet(tbl_outf, index=False)
@@ -103,7 +118,7 @@ def main(flg):
 
     # Pass 003 only
     if flg == 3:
-        wrangle_one_pass(3, debug=True)
+        wrangle_one_pass(3, ntotal=20000)#, debug=True)
 
 # Command line execution
 if __name__ == '__main__':
