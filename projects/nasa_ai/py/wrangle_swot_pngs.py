@@ -119,6 +119,8 @@ def main(flg):
     # Pass 003 only
     if flg == 3:
         wrangle_one_pass(3, ntotal=20000)#, debug=True)
+        # aws s3 cp Pass_003.h5 s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.h5 --profile nasa-oceanai
+        # aws s3 cp Pass_003.parquet s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.parquet --profile nasa-oceanai
 
 # Command line execution
 if __name__ == '__main__':
