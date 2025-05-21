@@ -12,12 +12,15 @@ import matplotlib.image as mpimg
 
 from IPython import embed
 
+swot_path = os.getenv('SWOT_PNGs')
 
-def wrangle_one_pass(ipass:int, path:str=None,
+def wrangle_one_pass(ipass:int, path:str=None, outf:str=None,
                      npix:int=55, debug:bool=False,
-                     ntotal:int=None):
+                     ntotal:int=None, train_frac=0.):
     if path is None:
         path = os.getenv('SWOT_PNGs')
+    if outf is None:
+        outf = os.path.join(path, f'Pass_{ipass:03d}.h5')
 
     files = glob.glob(os.path.join(
         path, f'Pass_{ipass:03d}', 'ssr_*.png'))
@@ -82,7 +85,7 @@ def wrangle_one_pass(ipass:int, path:str=None,
     all_imgs = np.expand_dims(all_imgs, axis=1)
 
     # Split into valid and train
-    ntrain = int(all_imgs.shape[0] * 0.8)
+    ntrain = int(all_imgs.shape[0] * train_frac)
     nvalid = all_imgs.shape[0] - ntrain
 
     # Create a simple table of metadata
@@ -96,14 +99,15 @@ def wrangle_one_pass(ipass:int, path:str=None,
     df['ptype'] = [1]*ntrain + [0]*nvalid
 
     # Write to disk as h5py
-    outf = os.path.join(path, f'Pass_{ipass:03d}.h5')
-    tbl_outf = os.path.join(path, f'Pass_{ipass:03d}.parquet')
+    tbl_outf = outf.replace('.h5', '.parquet')
+    #tbl_outf = os.path.join(path, f'Pass_{ipass:03d}.parquet')
 
     #embed(header='Check 51')
 
 
     with h5py.File(outf, 'w') as f:
-        f.create_dataset('train', data=all_imgs[:ntrain])
+        if ntrain > 0:
+            f.create_dataset('train', data=all_imgs[:ntrain])
         f.create_dataset('valid', data=all_imgs[ntrain:])
     print(f'Wrote {outf} with ntrain= {ntrain} and nvalid = {nvalid}')
 
@@ -118,9 +122,17 @@ def main(flg):
 
     # Pass 003 only
     if flg == 3:
-        wrangle_one_pass(3, ntotal=20000)#, debug=True)
+        wrangle_one_pass(3, ntotal=20000, train_frac=0.8)#, debug=True)
         # aws s3 cp Pass_003.h5 s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.h5 --profile nasa-oceanai
         # aws s3 cp Pass_003.parquet s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.parquet --profile nasa-oceanai
+
+    # Pass 006 only
+    if flg == 6:
+        wrangle_one_pass(6)
+
+    if flg == 60:
+        wrangle_one_pass(6, ntotal=1000, outf=os.path.join(swot_path,
+                         'Pass_006_test.h5'))
 
 # Command line execution
 if __name__ == '__main__':
