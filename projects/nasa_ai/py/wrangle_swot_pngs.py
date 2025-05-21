@@ -14,16 +14,21 @@ from IPython import embed
 
 swot_path = os.getenv('SWOT_PNGs')
 
-def wrangle_one_pass(ipass:int, path:str=None, outf:str=None,
+def wrangle_one_pass(ipass:int=None, path:str=None, outf:str=None,
                      npix:int=55, debug:bool=False,
+                     meta_idx:bool=True,
                      ntotal:int=None, train_frac=0.):
+
     if path is None:
         path = os.getenv('SWOT_PNGs')
     if outf is None:
         outf = os.path.join(path, f'Pass_{ipass:03d}.h5')
 
-    files = glob.glob(os.path.join(
-        path, f'Pass_{ipass:03d}', 'ssr_*.png'))
+    if ipass is not None:
+        files = glob.glob(os.path.join(
+            path, f'Pass_{ipass:03d}', 'ssr_*.png'))
+    else:
+        files = glob.glob(os.path.join(path, '*.png'))
 
     # Sort the files
     files = sorted(files)
@@ -54,9 +59,10 @@ def wrangle_one_pass(ipass:int, path:str=None, outf:str=None,
             for jcol in range(img.shape[1]//npix):
                 sub_imgs.append(img[irow*npix:(irow+1)*npix, jcol*npix:(jcol+1)*npix, 0])
                 #
-                idx0.append(int(basef.split('_')[1]))
-                idx1.append(int(basef.split('_')[2]))
-                idx2.append(int(basef.split('_')[3]))
+                if meta_idx:
+                    idx0.append(int(basef.split('_')[1]))
+                    idx1.append(int(basef.split('_')[2]))
+                    idx2.append(int(basef.split('_')[3]))
                 # Row, col
                 row.append(irow)
                 col.append(jcol)
@@ -74,9 +80,10 @@ def wrangle_one_pass(ipass:int, path:str=None, outf:str=None,
     all_imgs = np.concatenate(all_imgs)#, axis=0)
 
     # Recast
-    idx0 = np.array(idx0, dtype=np.int32)
-    idx1 = np.array(idx1, dtype=np.int32)
-    idx2 = np.array(idx2, dtype=np.int32)
+    if meta_idx:
+        idx0 = np.array(idx0, dtype=np.int32)
+        idx1 = np.array(idx1, dtype=np.int32)
+        idx2 = np.array(idx2, dtype=np.int32)
     row = np.array(row, dtype=np.int32)
     col = np.array(col, dtype=np.int32)
     sv_files = np.array(sv_files, dtype='S100')
@@ -91,9 +98,10 @@ def wrangle_one_pass(ipass:int, path:str=None, outf:str=None,
     # Create a simple table of metadata
     df = pandas.DataFrame()
     df['filename'] = sv_files
-    df['idx0'] = idx0
-    df['idx1'] = idx1
-    df['idx2'] = idx2
+    if meta_idx:
+        df['idx0'] = idx0
+        df['idx1'] = idx1
+        df['idx2'] = idx2
     df['row'] = row
     df['col'] = col
     df['ptype'] = [1]*ntrain + [0]*nvalid
@@ -122,16 +130,22 @@ def main(flg):
 
     # Pass 003 only
     if flg == 3:
-        wrangle_one_pass(3, ntotal=20000, train_frac=0.8)#, debug=True)
+        wrangle_one_pass(ipass=3, ntotal=20000, train_frac=0.8)#, debug=True)
         # aws s3 cp Pass_003.h5 s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.h5 --profile nasa-oceanai
         # aws s3 cp Pass_003.parquet s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.parquet --profile nasa-oceanai
 
     # Pass 006 only
     if flg == 6:
-        wrangle_one_pass(6)
+        wrangle_one_pass(ipass=6)
+
+    # Example files
+    if flg == 50:
+        ex_path = os.path.join(swot_path, 'ClassEx')
+        wrangle_one_pass(path=ex_path, meta_idx=False,
+                         outf=os.path.join(ex_path, 'Examples.h5'))
 
     if flg == 60:
-        wrangle_one_pass(6, ntotal=1000, outf=os.path.join(swot_path,
+        wrangle_one_pass(ipass=6, ntotal=1000, outf=os.path.join(swot_path,
                          'Pass_006_test.h5'))
 
 # Command line execution
