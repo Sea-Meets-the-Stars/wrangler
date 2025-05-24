@@ -21,6 +21,9 @@ def main(field, mask, inpaint=False,
          noise=None,
          log_scale=False, **kwargs):
     """
+    For multi-processing, it is best to wrapt this in a simple function
+    that takes a single field and returns the pre-processed field.
+    
     Preprocess an input field image with a series of steps:
         1. Inpainting
         2. Resize based on fixed_km (LLC)
@@ -94,7 +97,7 @@ def main(field, mask, inpaint=False,
     meta_dict['T90'] = field.flatten()[srt[i90]]
 
     # Resize?
-    if resize is not None:
+    if resize:
         field = resize_local_mean(field, (field_size, field_size))
 
     # Add noise?
