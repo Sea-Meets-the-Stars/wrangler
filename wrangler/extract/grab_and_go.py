@@ -26,7 +26,8 @@ from IPython import embed
 async def async_grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
     pass
 
-def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
+def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False,
+         download_dir:str=None):
     """
     Asynchronously grabs and optionally downloads files from a specified data source within a given time range.
 
@@ -37,6 +38,7 @@ def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
         t1 (datetime): The end time of the time range for which files are to be grabbed.
             e.g. '2020-01-02T00:00:00'
         verbose (bool, optional): If True, enables verbose output. Defaults to True.
+        download_dir (str, optional): Directory where files will be downloaded.
         skip_download (bool, optional): If True, skips the download step (useful for testing). Defaults to False.
 
     Returns:
@@ -53,10 +55,12 @@ def grab(aios_ds, t0, t1, verbose:bool=True, skip_download:bool=False):
             aios_ds.podaac_collection, 
             time_range=(t0, t1),
             verbose=verbose)
+        # Sort em
+        files = sorted(files)
 
         # Download
         if not skip_download:  # for testing
-            local_files = podaac.download_files(files, verbose=verbose)
+            local_files = podaac.download_files(files, verbose=verbose, download_dir=download_dir)
     else:
         raise ValueError("Only PODAAC datasets supported")
 
