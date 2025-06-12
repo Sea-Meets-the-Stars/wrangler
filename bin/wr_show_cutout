@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+This script enables one to inspect a h5 file
+"""
+
+from wrangler.scripts import show_cutout
+
+if __name__ == '__main__':
+    args = show_cutout.parser()
+    show_cutout.main(args)
