@@ -10,6 +10,7 @@ def parser(options=None):
     parser.add_argument("partition", type=str, help="Partition of the HDF5 file")
     parser.add_argument("idx", type=int, help="Index of the cutout to view")
     parser.add_argument("--cm", type=str, default='jet', help="Colormap to use for the image (default: 'jet')")
+    parser.add_argument("--clbl", type=str, help="Colormap label")
     #parser.add_argument("--land", action='store_true', help="Overlay land mask")
 
     if options is None:
@@ -41,6 +42,9 @@ def main(pargs):
     if cutout.ndim == 3:
         cutout = cutout[0,...]
 
+    # Max, min
+    print(f"Cutout min: {cutout.min()}, max: {cutout.max()}")
+
     # Plot
-    plot_cutout.show_image(cutout, show=True, cm=pargs.cm)
+    plot_cutout.show_image(cutout, show=True, cm=pargs.cm, clbl=pargs.clbl)
     
