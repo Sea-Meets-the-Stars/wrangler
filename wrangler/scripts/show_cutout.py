@@ -41,6 +41,8 @@ def main(pargs):
     # Remove the channels
     if cutout.ndim == 3:
         cutout = cutout[0,...]
+    elif cutout.ndim == 4:
+        cutout = cutout[0,0,...]
 
     # Max, min
     print(f"Cutout min: {cutout.min()}, max: {cutout.max()}")
