@@ -12,9 +12,10 @@ from wrangler.ogcm import llc as wr_llc
 from wrangler.preproc import field as pp_field
 from wrangler import utils as wr_utils
 
+from IPython import embed
 
 def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
-                n_cores:int=10):
+                n_cores:int=10, debug:bool=True):
     """Main routine to extract and pre-process LLC data for later analysis
 
     The llc_table is modified in place (and also returned).
@@ -46,6 +47,8 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         circum = 2 * np.pi* R_earth
         km_deg = circum / 360.
     
+    # Setup for parallel
+    map_fn = partial(pp_field.multi_process, pdict=pp_dict)
 
     '''
     # Kinematics
@@ -79,8 +82,8 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     #    llc_table, preproc_root, field_size=field_size)
     
     # Loop
-    #if debug:
-    #    uni_date = uni_date[0:1]
+    if debug:
+        uni_date = uni_date[0:1]
 
     for udate in uni_date:
         # Parse filename
@@ -193,12 +196,11 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     ppf_idx = []
     ppf_idx = wr_utils.match_ids(np.array(img_idx), ex_idx)
 
-    # Write
-    llc_table = pp_utils.write_pp_fields(
-        pp_fields, meta, llc_table, 
-        ex_idx, ppf_idx, 
-        valid_fraction, s3_file, local_file,
-        kin_meta=kin_meta, debug=debug, write_cutouts=write_cutouts)
+    if debug:
+        embed(header='199 of ogcm.py/extract_llc')
+
+    # Write out the preproc files
+    #  Warning -- it is assumed they are aligned to the table
 
     '''
     # Write kin?

@@ -9,11 +9,11 @@ class SSH(AIOS_DataSet):
     def __init__(self):
         super().__init__()
 
-class LLC_4320(SSH):
+class LLC4320_SSH(SSH):
     """ LLC 4320 Dataset """
     name = 'LLC4320_SSH'
     source = 'LLC4320'
-    variable = 'eta'
+    variable = 'Theta'
     
     def __init__(self):
         super().__init__()

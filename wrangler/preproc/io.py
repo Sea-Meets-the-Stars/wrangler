@@ -18,7 +18,7 @@ def load_options(filename:str):
 
     """
     # Tuples
-    with open(os.path.join(preproc_path, filename), 'rt') as fh:
+    with open(filename, 'rt') as fh:
         pdict = json.load(fh)
     # Tuple me
     for key in ['med_size', 'dscale_size']:

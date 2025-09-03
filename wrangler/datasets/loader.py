@@ -1,11 +1,7 @@
 """ Method to load a named AIOS_DataSet """
-import os
 
 from wrangler.datasets import base
 from wrangler import datasets
-
-from .sst import VIIRS_NPP
-
 
 def load_dataset(dataset):
     """
