@@ -59,3 +59,11 @@ class H09_L3C(H09):
     
     def __init__(self):
         super().__init__()
+
+class LLC_4320(SST):
+    """ LLC 4320 Dataset """
+    name = 'LLC4320_SST'
+    source = 'LLC4320'
+    
+    def __init__(self):
+        super().__init__()

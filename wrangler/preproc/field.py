@@ -10,6 +10,56 @@ from skimage import filters
 
 from IPython import embed
 
+def multi_process(item:tuple, pdict:dict, use_mask=False,
+                  inpainted_mask=False):
+    """
+    Simple wrapper for main()
+    Mainly for multi-processing
+
+    Parameters
+    ----------
+    item : tuple
+        field, idx or field,mask,idx (use_mask=True)
+    pdict : dict
+        Preprocessing dict
+    use_mask : bool, optional
+        If True, allow for an input mask
+    inpainted_mask : bool, optional
+        If True, the tuple includes an inpainted_mask
+        instead of a simple mask.
+
+    Returns
+    -------
+    pp_field, idx, meta : np.ndarray, int, dict
+
+    """
+    # Unpack
+    if use_mask:
+        field, mask, idx = item
+        if inpainted_mask:
+            true_mask = np.isfinite(mask)
+            # Fill-in inpainted values
+            field[true_mask] = mask[true_mask]
+            # Overwrite
+            mask = true_mask
+    else:
+        field, idx = item
+        mask = None
+
+    # Junk field?  (e.g. LLC)
+    if field is None:
+        return None
+
+    # Run
+    pp_field, meta = main(field, mask, **pdict)
+
+    # Failed?
+    if pp_field is None:
+        return None
+
+    # Return
+    return pp_field.astype(np.float32), idx, meta
+
 
 def main(field, mask, inpaint=False, 
          median=False, med_size=(3,1),
@@ -21,7 +71,7 @@ def main(field, mask, inpaint=False,
          noise=None,
          log_scale=False, **kwargs):
     """
-    For multi-processing, it is best to wrapt this in a simple function
+    For multi-processing, it is best to wrap this in a simple function
     that takes a single field and returns the pre-processed field.
     
     Preprocess an input field image with a series of steps:
