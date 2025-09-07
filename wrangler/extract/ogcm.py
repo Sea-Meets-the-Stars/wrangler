@@ -84,6 +84,7 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     # Loop
     if debug:
         uni_date = uni_date[0:1]
+        embed(header='87 of extract_llc.py')
 
     for udate in uni_date:
         # Parse filename
