@@ -304,7 +304,7 @@ def run(dataset:str, tstart, tend, eoption_file:str,
     dset = f_h5.create_dataset('metadata', data=np.concatenate(metadata).astype('S'))
     dset.attrs['columns'] = columns
     # Close
-    f_h5.close() 
+    f_h5.close()
 
     # Table time
     table = pandas.DataFrame()
