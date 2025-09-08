@@ -13,7 +13,7 @@ class LLC4320_SSH(SSH):
     """ LLC 4320 Dataset """
     name = 'LLC4320_SSH'
     source = 'LLC4320'
-    variable = 'Theta'
+    variable = 'Eta'
     
     def __init__(self):
         super().__init__()

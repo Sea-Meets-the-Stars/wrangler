@@ -17,7 +17,7 @@ from wrangler import defs as wr_defs
 from IPython import embed
 
 def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
-                out_file:str,
+                out_file:str, zarr_path:str=None,
                 n_cores:int=10, debug:bool=True):
     """Main routine to extract and pre-process LLC data for later analysis
 
@@ -29,6 +29,8 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         aios_ds (object): Dataset object with field information
         pp_dict (dict): Preprocessing dictionary with keys:
         n_cores (int, optional): Number of cores for multi-processing. Defaults to 10.
+        zarr_path (str, optional): Path to zarr files. Defaults to None.
+        debug (bool, optional): Debug mode. Defaults to True.
 
     Raises:
         IOError: [description]
@@ -42,6 +44,11 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         if key not in llc_table.keys():
             llc_table[key] = ''
     llc_table['pp_idx'] = -1
+
+    if zarr_path is not None:
+        ds_zarr = xarray.open_zarr(zarr_path, consolidated=False)
+        face = 1
+        t0 = pandas.Timestamp('2011-09-13T00:00:00')
 
     # Load coords?
     fixed_km = None if 'fixed_km' not in pp_dict.keys() else pp_dict['fixed_km']
@@ -90,14 +97,20 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         uni_date = uni_date[0:1]
 
     for udate in uni_date:
-        # Parse filename
-        filename = wr_llc.grab_llc_datafile(udate)
 
-        # Allow for s3
-        ds = xarray.open_dataset(filename)
-        #ds = llc_io.load_llc_ds(filename, local=dlocal)
-
-        variable = ds[aios_ds.variable].values
+        # Data format
+        if zarr_path is not None:
+            ts = pandas.Timestamp(udate)
+            # Convert date into time index
+            dt = ts - t0
+            time = int(dt / pandas.Timedelta(hours=1))
+            # 
+            variable = ds_zarr[aios_ds.variable].isel(time=time,face=face).values
+        else:
+            # Parse filename
+            filename = wr_llc.grab_llc_datafile(udate)
+            ds = xarray.open_dataset(filename)
+            variable = ds[aios_ds.variable].values
 
         # Parse 
         gd_date = llc_table.datetime == udate
@@ -202,8 +215,8 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     # There can be some loss due to preprocessing
     pp_fields = np.stack(pp_fields)
 
-    if debug:
-        embed(header='206 of ogcm.py/extract_llc')
+    #if debug:
+    #    embed(header='206 of ogcm.py/extract_llc')
 
     # Cut the Table and re-order to images
     llc_table = llc_table.iloc[ppf_idx].copy()
