@@ -67,7 +67,7 @@ def main(field, mask, inpaint=False,
          sigmoid=False, scale=None,
          expon=None, only_inpaint=False, gradient=False,
          min_mean=None, de_mean=False,
-         field_size=None, resize:bool=False, 
+         field_size=None, resize:bool=False,
          noise=None,
          log_scale=False, **kwargs):
     """
@@ -114,7 +114,7 @@ def main(field, mask, inpaint=False,
         If True, subtract the mean
     min_mean : float, optional
         If provided, require the image has a mean exceeding this value
-    rsize : bool, optional
+    resize : bool, optional
         If provided, resize the input imzge to field_size x field_size 
     **kwargs : catches extraction keywords
 

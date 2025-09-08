@@ -4,17 +4,20 @@ import numpy as np
 import pandas
 import xarray
 
+import h5py
+
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
 from wrangler.ogcm import llc as wr_llc
 from wrangler.preproc import field as pp_field
-from wrangler import utils as wr_utils
+from wrangler import defs as wr_defs
 
 from IPython import embed
 
 def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
+                out_file:str,
                 n_cores:int=10, debug:bool=True):
     """Main routine to extract and pre-process LLC data for later analysis
 
@@ -38,6 +41,7 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     for key in ['filename', 'pp_file']:
         if key not in llc_table.keys():
             llc_table[key] = ''
+    llc_table['pp_idx'] = -1
 
     # Load coords?
     fixed_km = None if 'fixed_km' not in pp_dict.keys() else pp_dict['fixed_km']
@@ -84,7 +88,6 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
     # Loop
     if debug:
         uni_date = uni_date[0:1]
-        embed(header='87 of extract_llc.py')
 
     for udate in uni_date:
         # Parse filename
@@ -193,15 +196,43 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         #embed(header='extract 223')
 
     # Fuss with indices
-    ex_idx = np.array(all_sub)
-    ppf_idx = []
-    ppf_idx = wr_utils.match_ids(np.array(img_idx), ex_idx)
+    #ex_idx = np.array(all_sub)
+    ppf_idx = np.array(img_idx)
+
+    # There can be some loss due to preprocessing
+    pp_fields = np.stack(pp_fields)
 
     if debug:
-        embed(header='199 of ogcm.py/extract_llc')
+        embed(header='206 of ogcm.py/extract_llc')
 
-    # Write out the preproc files
-    #  Warning -- it is assumed they are aligned to the table
+    # Cut the Table and re-order to images
+    llc_table = llc_table.iloc[ppf_idx].copy()
+    llc_table.reset_index(inplace=True, drop=True)
+
+    # Fuss with indexing
+    # Valid and train indices
+    valid = llc_table.pp_type == wr_defs.tbl_dmodel['pp_type']['valid']
+    valid_idx = llc_table.index[valid].to_numpy()
+    llc_table.loc[valid_idx, 'pp_idx'] = np.arange(np.sum(valid))
+
+    train = llc_table.pp_type == wr_defs.tbl_dmodel['pp_type']['train']
+    train_idx = llc_table.index[train].to_numpy()
+    llc_table.loc[train_idx, 'pp_idx'] = np.arange(np.sum(train))
+
+    # ###################
+    # Write to disk (avoids holding another 20Gb in memory)
+    print("Writing: {}".format(out_file))
+    with h5py.File(out_file, 'w') as f:
+        # Validation
+        f.create_dataset('valid', data=pp_fields[valid_idx].astype(np.float32))
+        # Metadata
+        #dset = f.create_dataset('valid_metadata', data=main_tbl.iloc[valid_idx].to_numpy(dtype=str).astype('S'))
+        #dset.attrs['columns'] = clms
+        # Train
+        f.create_dataset('train', data=pp_fields[train_idx].astype(np.float32))
+        #dset = f.create_dataset('train_metadata', data=main_tbl.iloc[train_idx].to_numpy(dtype=str).astype('S'))
+        #dset.attrs['columns'] = clms
+    print("Wrote: {}".format(out_file))
 
     '''
     # Write kin?
