@@ -67,12 +67,12 @@ def add_uid(df:pandas.DataFrame):
     tlong = df['datetime'].values.astype(np.int64) // 10000000000
     latkey = 'latitude' if 'latitude' in df.keys() else 'lat'
     lonkey = 'longitude' if 'longitude' in df.keys() else 'lon'
-    lats = np.round((df[latkey].values.astype(float) + 90)*10000).astype(int)
+    lats = np.round((df[latkey].values.astype(float) + 90)*100000).astype(int)
     lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
-    uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-5],lat,lon))
+    uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
             for t,lat,lon in zip(tlong, lats, lons)]
     if len(uid) != len(np.unique(uid)):
-        embed(header='67 of results')
+        embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
 
     uids = np.array(uid).astype(np.int64)
     df['UID'] = uids
