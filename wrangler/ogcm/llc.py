@@ -81,6 +81,7 @@ def add_uid(df:pandas.DataFrame):
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
 
     uids = np.array(uid)#.astype(np.int64)
+    embed(header='84 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
     df['UID'] = uids
 
     # Return
