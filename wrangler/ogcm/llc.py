@@ -1,6 +1,7 @@
 """ Methods related to ECCO LLC datasets """
 import os
 import numpy as np
+import hashlib
 
 import xarray
 
@@ -69,7 +70,9 @@ def add_uid(df:pandas.DataFrame):
     lonkey = 'longitude' if 'longitude' in df.keys() else 'lon'
     lats = np.round((df[latkey].values.astype(float) + 90)*100000).astype(int)
     lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
-    uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
+    #uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
+    #        for t,lat,lon in zip(tlong, lats, lons)]
+    uid = [hashlib.sha256('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon).encode('utf-8')).hexdigest()[:20]
             for t,lat,lon in zip(tlong, lats, lons)]
     if len(uid) != len(np.unique(uid)):
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
