@@ -182,15 +182,19 @@ def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None,
     good_sep = sep2d < hp.pixel_resolution
 
     # Insist these are unique
-    embed(header='185 of wrangler.ogcm.llc.uniform_coords: check for unique coords')
+    gidx = idx[good_sep]
+    if len(gidx) != len(np.unique(gidx)):
+        # Cut down to unique
+        _, unq_idx = np.unique(gidx, return_index=True)
+        gidx = gidx[sorted(unq_idx)]
 
     # Build the table
     llc_table = pandas.DataFrame()
-    llc_table['lat'] = llc_lat[idx[good_sep]]  # Center of cutout
-    llc_table['lon'] = llc_lon[idx[good_sep]]  # Center of cutout
+    llc_table['lat'] = llc_lat[gidx]  # Center of cutout
+    llc_table['lon'] = llc_lon[gidx]  # Center of cutout
 
-    llc_table['row'] = good_CC_idx[0][idx[good_sep]] - field_size[0]//2 # Lower left corner
-    llc_table['col'] = good_CC_idx[1][idx[good_sep]] - field_size[0]//2 # Lower left corner
+    llc_table['row'] = good_CC_idx[0][gidx] - field_size[0]//2 # Lower left corner
+    llc_table['col'] = good_CC_idx[1][gidx] - field_size[0]//2 # Lower left corner
 
     # Cut on latitutde?
     if minmax_lat is not None:
