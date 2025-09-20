@@ -72,7 +72,7 @@ def add_uid(df:pandas.DataFrame):
     lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
     #uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
     #        for t,lat,lon in zip(tlong, lats, lons)]
-    uid = [hashlib.sha256('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon).encode('utf-8')).hexdigest()[:20]
+    uid = [hashlib.sha256('{:s}{:d}{:d}'.format(str(t)[:-3],lat,lon).encode('utf-8')).hexdigest()[:30]
             for t,lat,lon in zip(tlong, lats, lons)]
     if len(uid) != len(np.unique(uid)):
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
@@ -81,7 +81,7 @@ def add_uid(df:pandas.DataFrame):
     df['UID'] = uids
 
     # Return
-    return np.array(uid).astype(np.int64)
+    return uids
 
 
 def build_table(freq:str='2M', resol=0.5, minmax_lat=None, 
