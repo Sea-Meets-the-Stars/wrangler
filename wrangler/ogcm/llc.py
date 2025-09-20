@@ -6,6 +6,10 @@ import xarray
 
 import pandas
 
+# Plotting
+from matplotlib import pyplot as plt
+import cartopy.crs as ccrs
+
 # Astronomy tools
 import astropy_healpix
 
@@ -14,13 +18,14 @@ from astropy.coordinates import SkyCoord, match_coordinates_sky
 
 from wrangler.tables import io as tbl_io
 
-def add_days(llc_table:pandas.DataFrame, dti:pandas.DatetimeIndex, outfile=None):
+from IPython import embed
+
+def add_days(llc_table:pandas.DataFrame, dti:pandas.DatetimeIndex):
     """Add dates to an LLC table
 
     Args:
         llc_table (pandas.DataFrame): [description]
         dti (pandas.DatetimeIndex): [description]
-        outfile ([type], optional): [description]. Defaults to None.
 
     Returns:
         [type]: [description]
@@ -42,43 +47,88 @@ def add_days(llc_table:pandas.DataFrame, dti:pandas.DatetimeIndex, outfile=None)
     # Drop index
     llc_table.drop(columns=['index'], inplace=True)
 
-    # Write
-    if outfile is not None:
-        #assert catalog.vet_main_table(llc_table)
-        tbl_io.write_main_table(llc_table, outfile)
-
     # Return
     return llc_table
 
 
-def build_table(debug=False, resol=0.5, minmax_lat=None):
+def add_uid(df:pandas.DataFrame):
+    """ Generate a unique identifier for LLC
+
+    Add to table in place in the 'UID' column
+
+    Args:
+        df (pandas.DataFrame): main table
+
+    Returns:
+        numpy.ndarray: int64 array of unique identifiers
+    """
+        
+    # Unique identifier
+    tlong = df['datetime'].values.astype(np.int64) // 10000000000
+    latkey = 'latitude' if 'latitude' in df.keys() else 'lat'
+    lonkey = 'longitude' if 'longitude' in df.keys() else 'lon'
+    lats = np.round((df[latkey].values.astype(float) + 90)*10000).astype(int)
+    lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
+    uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-5],lat,lon))
+            for t,lat,lon in zip(tlong, lats, lons)]
+    if len(uid) != len(np.unique(uid)):
+        embed(header='67 of results')
+
+    uids = np.array(uid).astype(np.int64)
+    df['UID'] = uids
+
+    # Return
+    return np.array(uid).astype(np.int64)
+
+
+def build_table(freq:str='2M', resol=0.5, minmax_lat=None, 
+                init_date:str='2011-09-13',
+                field_size=(64,64), nperiods:int=6, 
+                plot:bool=False):
     """ Get the show started by sampling uniformly
     in space and and time
 
     Args:
-        debug (bool, optional): _description_. Defaults to True.
+        freq (str, optional): Frequency string for pandas date_range
+            Sample every freq. Defaults to '2M' (2 months)
         resol (float, optional): 
             Typical separation of images in deg
         minmax_lat (tuple, optional): Restrict to latitudes given by this range
+            Passed to uniform_coords
+        init_date (str, optional): Start date. Defaults to '2011-09-13'.
+            Should be a date that exists in the LLC dataset
+        nperiods (int, optional): Number of periods to sample
+        field_size (tuple, optional): Cutout size in pixels.
+            Passed to uniform_coords. Defaults to (64,64).
+        plot (bool, optional): Plot the spatial distribution?
+            Defaults to False.
+
+    Returns:
+        pandas.DataFrame: Table containing the coords
 
     """
     # Begin 
-    llc_table = coords(resol=resol, minmax_lat=minmax_lat, field_size=(64,64))
+    llc_table = uniform_coords(resol=resol, minmax_lat=minmax_lat, field_size=field_size)
+
+    # Plot
+    if plot:
+        plot_extraction(llc_table, s=1, resol=resol)
+
 
     # Temporal sampling
-    if debug:
-        # Extract 6 days across the full range;  ends of months
-        dti = pandas.date_range('2011-09-13', periods=6, freq='2M')
-    else:
-        # Extract 24 days across the full range;  ends of months; every 2 weeks
-        dti = pandas.date_range('2011-09-13', periods=24, freq='2W')
+    dti = pandas.date_range(init_date, periods=nperiods, freq=freq)
+
+    # Add days
     llc_table = add_days(llc_table, dti)
+
+    # Add UIDs
+    _ = add_uid(llc_table)
 
     # Return
     return llc_table
 
-def coords(resol, field_size, CC_max=1e-4, outfile=None, 
-           minmax_lat=None, localCC=True,
+def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None, 
+           minmax_lat=None, localCC:bool=True,
            rotate:float=None):
     """
     Use healpix to setup a uniform extraction grid
@@ -214,3 +264,57 @@ def load_CC_mask(field_size=(64,64), verbose=True, local=True):
         print("Loaded LLC CC mask from {}".format(CC_mask_file))
     # Return
     return CC_mask
+
+
+def plot_extraction(llc_table:pandas.DataFrame, figsize=(7,4),
+                    resol=None, cbar=False, s=0.01):
+    """Plot the extractions to check
+
+    Args:
+        llc_table (pandas.DataFrame): table of cutouts
+        figsize (tuple, optional): Sets the figure size
+        resol (float, optional): Angle in deg for healpix check. Defaults to None.
+        cbar (bool, optional): [description]. Defaults to False.
+        s (float, optional): [description]. Defaults to 0.01.
+    """
+
+    fig = plt.figure(figsize=figsize)
+    plt.clf()
+
+    tformM = ccrs.Mollweide()
+    tformP = ccrs.PlateCarree()
+
+    ax = plt.axes(projection=tformM)
+
+
+    # Cut
+    #good = np.invert(hp_events.mask)
+    img = plt.scatter(x=llc_table.lon,
+        y=llc_table.lat,
+        s=s, zorder=2,
+        transform=tformP)
+
+    # Healpix?
+    if resol is not None:
+        nside = astropy_healpix.pixel_resolution_to_nside(resol*units.deg)
+        hp = astropy_healpix.HEALPix(nside=nside)
+        hp_lon, hp_lat = hp.healpix_to_lonlat(np.arange(hp.npix))
+        img = plt.scatter(x=hp_lon.to('deg').value,
+            y=hp_lat.to('deg').value,
+            s=s,
+            color='r', zorder=1,
+            transform=tformP)
+
+    #
+    # Colorbar
+    if cbar:
+        cb = plt.colorbar(img, orientation='horizontal', pad=0.)
+        cb.ax.tick_params(labelsize=17)
+
+    # Coast lines
+    ax.coastlines(zorder=10)
+    ax.set_global()
+
+    plt.show()
+
+    return
