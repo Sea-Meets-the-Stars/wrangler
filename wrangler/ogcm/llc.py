@@ -77,7 +77,7 @@ def add_uid(df:pandas.DataFrame):
     if len(uid) != len(np.unique(uid)):
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
 
-    uids = np.array(uid).astype(np.int64)
+    uids = np.array(uid)#.astype(np.int64)
     df['UID'] = uids
 
     # Return

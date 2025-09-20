@@ -76,6 +76,8 @@ tbl_dmodel = {
                     help='-1: illdefined, 0: valid, 1: train'),
                     # In Ulmo, we use 1 for the subset of training and 0 for the rest
                     # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
+    'UID': dict(dtype=str,
+                help='Unique ID for the cutout. Usually a hash of lat, lon, datetime'),
     'images_file': dict(dtype=str,
                 help='Name of the images file, likely hdf5'),
     'data_folder': dict(dtype=str,
