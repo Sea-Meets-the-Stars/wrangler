@@ -65,14 +65,17 @@ def add_uid(df:pandas.DataFrame):
     """
         
     # Unique identifier
-    tlong = df['datetime'].values.astype(np.int64) // 10000000000
+    tlong = df['datetime'].values.astype('datetime64[ms]').astype(np.int64) // 10000
     latkey = 'latitude' if 'latitude' in df.keys() else 'lat'
     lonkey = 'longitude' if 'longitude' in df.keys() else 'lon'
-    lats = np.round((df[latkey].values.astype(float) + 90)*100000).astype(int)
-    lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
+    
+    #lats = np.round((df[latkey].values.astype(float) + 90)*100000).astype(int)
+    #lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
+    lats = df[latkey].values.astype(float) + 90
+    lons = df[lonkey].values.astype(float) + 180
     #uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
     #        for t,lat,lon in zip(tlong, lats, lons)]
-    uid = [hashlib.sha256('{:s}{:d}{:d}'.format(str(t)[:-3],lat,lon).encode('utf-8')).hexdigest()[:30]
+    uid = [hashlib.sha256(f'{t}{lat}{lon}'.encode('utf-8')).hexdigest()[:20]
             for t,lat,lon in zip(tlong, lats, lons)]
     if len(uid) != len(np.unique(uid)):
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
@@ -177,6 +180,9 @@ def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None,
     print("Cross-match")
     idx, sep2d, _ = match_coordinates_sky(hp_coord, llc_coord, nthneighbor=1)
     good_sep = sep2d < hp.pixel_resolution
+
+    # Insist these are unique
+    embed(header='185 of wrangler.ogcm.llc.uniform_coords: check for unique coords')
 
     # Build the table
     llc_table = pandas.DataFrame()
