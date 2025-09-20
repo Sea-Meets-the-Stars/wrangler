@@ -55,7 +55,8 @@ def grow_mask(mask, radius):
     # Dilate the mask
     return scipy.ndimage.binary_dilation(mask, structure=x**2 + y**2 <= radius**2)
 
-def match_ids(IDs, match_IDs, require_in_match=True):
+
+def match_ids(IDs, match_IDs, require_in_match=True, assume_unique:bool=False):
     """ Match input IDs to another array of IDs (usually in a table)
     Return the rows aligned with input IDs
 
@@ -67,6 +68,8 @@ def match_ids(IDs, match_IDs, require_in_match=True):
         IDs to be searched
     require_in_match : bool, optional
         Require that each of the input IDs occurs within the match_IDs
+    assume_unique : bool, optional
+        Assume that both input arrays have unique IDs
 
     Returns
     -------
@@ -76,16 +79,18 @@ def match_ids(IDs, match_IDs, require_in_match=True):
     """
     rows = -1 * np.ones_like(IDs).astype(int)
     # Find which IDs are in match_IDs
-    in_match = np.in1d(IDs, match_IDs)
+    in_match = np.isin(IDs, match_IDs, assume_unique=assume_unique)
     if require_in_match:
-        if np.sum(~in_match) > 0:
-            raise IOError("qcat.match_ids: One or more input IDs not in match_IDs")
+        if not np.all(in_match):
+            raise IOError("wrangler.tables.utils.match_ids: One or more input IDs not in match_IDs")
     rows[~in_match] = -1
     #
     IDs_inmatch = IDs[in_match]
+
     # Find indices of input IDs in meta table -- first instance in meta only!
     xsorted = np.argsort(match_IDs)
     ypos = np.searchsorted(match_IDs, IDs_inmatch, sorter=xsorted)
     indices = xsorted[ypos]
     rows[in_match] = indices
+
     return rows

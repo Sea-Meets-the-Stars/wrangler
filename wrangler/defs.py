@@ -3,10 +3,7 @@
 import numpy as np
 import pandas
 
-# Wrangler options
-
-# Wrangle extraction options
-
+# Extraction data model
 ex_dmodel = {
     'field_size': dict(dtype=(int, np.integer),
                 help='Size of the cutout side (pixels)'),
@@ -26,6 +23,37 @@ ex_dmodel = {
                 help='Inpaint the cutout'),
 }
     
+# Pre-processing data model
+pp_dmodel = {
+    'inpaint': dict(dtype=bool,
+                help='Inpaint the cutout'),
+    'only_inpaint': dict(dtype=bool,
+                help='Only inpaint the cutout'),
+    'smooth_pix': dict(dtype=(int, np.integer),
+                help='Smooth the cutout with a Gaussian of this size (pixels)'),
+    'median': dict(dtype=bool,
+                help='Apply a median filter'),
+    'med_size': dict(dtype=(int, np.integer),
+                help='Size of the median filter window'),
+    'downscale': dict(dtype=bool,
+                help='Downscale the cutout'),
+    'dscale_size': dict(dtype=(int, np.integer),
+                help='Size to downscale the cutout to'),
+    'noise': dict(dtype=(float,np.floating),
+                help='Add white noise of this amplitude'),
+    'scale': dict(dtype=(float,np.floating),
+                help='Scale the cutout by this multiplicative factor'),
+    'expon': dict(dtype=(float,np.floating),
+                help='Exponentiate the cutout by this exponent'),
+    'gradient': dict(dtype=bool,
+                help='Apply a Sobel gradient filter'),
+    'de_mean': dict(dtype=bool,
+                help='Subtract the mean from the cutout'),
+    'min_mean': dict(dtype=(float,np.floating),
+                help='Require the mean of the cutout to exceed this value'),
+    'resize': dict(dtype=bool,
+                help='Resize the cutout to field_size x field_size'),
+}
 
 # Wrangler table data model
 tbl_dmodel = {
@@ -76,8 +104,8 @@ tbl_dmodel = {
                     help='-1: illdefined, 0: valid, 1: train'),
                     # In Ulmo, we use 1 for the subset of training and 0 for the rest
                     # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
-    'UID': dict(dtype=str,
-                help='Unique ID for the cutout. Usually a hash of lat, lon, datetime'),
+    'UID': dict(dtype=np.int64,
+                help='Unique ID for the cutout. Usually an integer made from of lat, lon, datetime'),
     'images_file': dict(dtype=str,
                 help='Name of the images file, likely hdf5'),
     'data_folder': dict(dtype=str,

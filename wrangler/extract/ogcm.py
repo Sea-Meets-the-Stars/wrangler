@@ -11,10 +11,211 @@ from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
 from wrangler.ogcm import llc as wr_llc
+from wrangler.ogcm.preproc import gradb2_cutout, b_cutout 
 from wrangler.preproc import field as pp_field
 from wrangler import defs as wr_defs
+from wrangler import utils as wr_utils
 
 from IPython import embed
+
+
+def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str, 
+                     cutout_size=(64,64), fixed_km=None, n_cores=10, 
+                     coords_ds=None, test_failures:bool=False, 
+                     test_process:bool=False, debug=False):
+    """Main routine to extract and pre-process LLC data for later SST analysis
+    The llc_table is modified in place (and also returned).
+
+    Args:
+        llc_table (pandas.DataFrame): cutout table
+            Should have been cut to a single datetime matching udate
+        field (str): Field to extract
+            Allowed options are: 'SST', 'SSS', 'Divb2', 'normDivb2', 'b', 'SSH'
+        pdict (dict): Preprocessing steps. 
+        cutout_size (tuple, optional): Defines cutout shape. Defaults to (64,64).
+        fixed_km (float, optional): Require cutout to be this size in km
+        n_cores (int, optional): Number of cores for parallel processing. Defaults to 10.
+        valid_fraction (float, optional): [description]. Defaults to 1..
+        dlocal (bool, optional): Data files are local? Defaults to False.
+        override_RAM (bool, optional): Over-ride RAM warning?
+
+    Raises:
+        IOError: [description]
+
+    Returns:
+        pandas.DataFrame: Modified in place table
+        success (np.ndarray): Bool array of successful extractions
+        pp_fields (np.ndarray): Pre-processed fields
+        final_meta (pandas.DataFrame): Meta data for each cutout
+
+    """
+    # Check date
+    assert np.all(llc_table.datetime == udate)
+
+    # Prepping
+    R_earth = 6371. # km
+    circum = 2 * np.pi* R_earth
+    km_deg = circum / 360.
+
+    # Load coords?
+    if fixed_km is not None and coords_ds is None:
+        coords_ds = wr_llc.load_coords()
+    
+    # Setup for parallel
+    if field in ['SST','SSS','DivSST2','SSTK']:
+        map_fn = partial(pp_field.multi_process, pdict=pdict)
+    elif field in ['Divb2']:
+        map_fn = partial(gradb2_cutout, **pdict)
+    elif field in ['b']:
+        map_fn = partial(b_cutout, **pdict)
+    else:
+        raise IOError(f"Not ready for this field {field}")
+
+    # Load data
+    filename = wr_llc.grab_llc_datafile(udate)
+    ds = xarray.open_dataset(filename)
+
+    # Field
+    data2 = None
+    if field in ['SST', 'DivSST2', 'SSTK']:
+        data = ds.Theta.values
+        if field == 'SSTK':
+            data += 273.15 # Kelvin
+    elif field == 'SSS':
+        data = ds.Salt.values
+    elif field in ['Divb2', 'b']:
+        data = ds.Theta.values
+        data2 = ds.Salt.values
+    else:
+        raise IOError(f"Not ready for this field {field}")
+
+    # Parse 
+    sub_UID = llc_table.UID.values
+
+    # Load up the cutouts
+    fields, fields2, smooth_pixs = [], [], []
+    for r, c in zip(llc_table.row, llc_table.col):
+        if fixed_km is None:
+            dr = cutout_size[0]
+            dc = cutout_size[1]
+        else:
+            dlat_km = (coords_ds.lat.data[r+1,c]-coords_ds.lat.data[r,c]) * km_deg
+            dr = int(np.round(fixed_km / dlat_km))
+            dc = dr
+        # Deal with smoothing
+        if 'smooth_km' in pdict.keys():
+            smooth_pix = int(np.round(pdict['smooth_km'] / dlat_km))
+            pad = 2*smooth_pix
+            #
+            use_r = r - pad
+            dr += 2*pad
+            use_c = c - pad
+            dc += 2*pad
+            smooth_pixs.append(smooth_pix)
+        else:
+            use_r, use_c = r, c
+        # Off the image?
+        if (r+dr >= data.shape[0]) or (c+dc > data.shape[1]) or (
+            use_r < 0) or (use_c < 0):
+            fields.append(None)
+        else:
+            fields.append(data[use_r:use_r+dr, use_c:use_c+dc])
+        # More?
+        if data2 is not None:
+            fields2.append(data2[use_r:use_r+dr, use_c:use_c+dc])
+    print("Cutouts loaded for {}".format(filename))
+
+    # Prep items
+    zipitems = [fields]
+    if len(fields2) > 0:
+        zipitems.append(fields2)
+    zipitems.append(sub_UID)
+    if 'smooth_km' in pdict.keys():
+        zipitems.append(smooth_pixs)
+    items = [item for item in zip(*zipitems)]
+
+    # Test processing
+    if test_process:
+        embed(header='extract.py/preproc_field 145')
+        idx = 50
+        img, tmeta = process.preproc_field(fields[idx], None, **pdict)
+        #img, iidx, tmeta = po_fronts.anly_cutout(
+        #    items[idx], **pdict)
+        '''
+        # Smoothing
+        img, tmeta = process.preproc_field(fields[idx], None,
+                                smooth_pix=smooth_pixs[idx], 
+                                **pdict)
+        # 
+        '''
+        from matplotlib import pyplot as plt
+        fig = plt.figure(figsize=(8,8))
+        plt.clf()
+        plt.imshow(img, origin='lower')
+        plt.show()
+
+    # Multi-process time
+    with ProcessPoolExecutor(max_workers=n_cores) as executor:
+        chunksize = len(items) // n_cores if len(items) // n_cores > 0 else 1
+        answers = list(tqdm(executor.map(map_fn, items,
+                                            chunksize=chunksize), total=len(items)))
+
+    print("Done processing")
+    # Debuggin
+    if test_failures:
+        answers[50] = [None, answers[50][1], None]
+
+    # Deal with failures
+    #answers = [f for f in answers if f is not None]
+    img_UID = [item[1] for item in answers]
+
+    # Slurp
+    pp_fields = [item[0] for item in answers]
+    meta = [item[2] for item in answers]
+
+    # Clean up
+    del answers, fields, items
+
+    # Fuss with indices
+    tbl_UID = llc_table.UID.values
+    img_UID = np.array(img_UID)
+    img_idx = np.arange(len(img_UID))
+
+
+    # Clean up time (indices and bad data)
+
+    # Find the bad ones (if any)
+    bad_idx = [int(item[1]) for item in zip(pp_fields, img_idx) if item[0] is None]
+    good_idx = np.array([int(item[1]) for item in zip(pp_fields, img_idx) if item[0] is not None])
+
+    success = np.ones(len(pp_fields), dtype=bool)
+
+    # Replace with -1 images
+    if len(bad_idx) > 0:
+        size = pp_fields[good_idx[0]].shape
+        bad_img = -1*np.ones(size)
+        for ii in bad_idx:
+            pp_fields[ii] = bad_img.copy()
+            success[ii] = False
+
+    # Align pp_fields with the Table
+    ppf_idx = wr_utils.match_ids(img_UID, tbl_UID, require_in_match=True)
+    pp_fields = np.array(pp_fields)[ppf_idx]
+
+    # Meta time
+    good_meta = pandas.DataFrame([item for item in meta if item is not None])
+    final_meta = pandas.DataFrame()
+    tbl_idx = wr_utils.match_ids(img_UID[good_idx], tbl_UID, require_in_match=True)
+
+    for key in good_meta.keys():
+        final_meta[key] = np.zeros(len(ppf_idx))
+        #
+        final_meta.loc[tbl_idx, key] = good_meta[key].values
+
+    # Return
+    return success, pp_fields, final_meta, filename
+
+
 
 def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
                 out_file:str, zarr_path:str=None,
@@ -39,6 +240,7 @@ def extract_llc(llc_table:pandas.DataFrame, aios_ds, pp_dict:dict,
         pandas.DataFrame: Modified in place table
 
     """
+    raise DeprecationWarning("Use fronts.llc.extract.preproc_field instead")
     # Prepping
     for key in ['filename', 'pp_file']:
         if key not in llc_table.keys():

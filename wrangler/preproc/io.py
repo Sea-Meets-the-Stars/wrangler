@@ -1,6 +1,5 @@
 """ Module for I/O related to pre-processing"""
 import os
-from pkg_resources import resource_filename
 
 import json
 

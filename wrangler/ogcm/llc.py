@@ -1,7 +1,6 @@
 """ Methods related to ECCO LLC datasets """
 import os
 import numpy as np
-import hashlib
 
 import xarray
 
@@ -63,26 +62,23 @@ def add_uid(df:pandas.DataFrame):
     Returns:
         numpy.ndarray: int64 array of unique identifiers
     """
-        
+    
+
     # Unique identifier
-    tlong = df['datetime'].values.astype('datetime64[ms]').astype(np.int64) // 10000
+    tlong = df['datetime'].values.astype(np.int64) // 10000000
     latkey = 'latitude' if 'latitude' in df.keys() else 'lat'
     lonkey = 'longitude' if 'longitude' in df.keys() else 'lon'
-    
-    #lats = np.round((df[latkey].values.astype(float) + 90)*100000).astype(int)
-    #lons = np.round((df[lonkey].values.astype(float) + 180)*100000).astype(int)
-    lats = df[latkey].values.astype(float) + 90
-    lons = df[lonkey].values.astype(float) + 180
-    #uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-6],lat,lon))
-    #        for t,lat,lon in zip(tlong, lats, lons)]
-    uid = [hashlib.sha256(f'{t}{lat}{lon}'.encode('utf-8')).hexdigest()[:20]
+    lats = np.round((df[latkey].values.astype(float) + 90)*1000).astype(int)
+    lons = np.round((df[lonkey].values.astype(float) + 180)*1000).astype(int)
+    uid = [np.int64('{:s}{:d}{:d}'.format(str(t)[:-5],lat,lon))
             for t,lat,lon in zip(tlong, lats, lons)]
+        
     if len(uid) != len(np.unique(uid)):
+        uval, counts = np.unique(uid, return_counts=True)
         embed(header='67 of wrangler.ogcm.llc.add_uid: duplicate UIDs')
 
-    uids = np.array(uid)#.astype(np.int64)
+    uids = np.array(uid).astype(np.int64)
     df['UID'] = uids
-    df['UID'] = df.UID.astype('string')
 
     # Return
     return uids
@@ -90,7 +86,7 @@ def add_uid(df:pandas.DataFrame):
 
 def build_table(freq:str='2M', resol=0.5, minmax_lat=None, 
                 init_date:str='2011-09-13',
-                field_size=(64,64), nperiods:int=6, 
+                cutout_size=(64,64), nperiods:int=6, 
                 plot:bool=False):
     """ Get the show started by sampling uniformly
     in space and and time
@@ -105,7 +101,7 @@ def build_table(freq:str='2M', resol=0.5, minmax_lat=None,
         init_date (str, optional): Start date. Defaults to '2011-09-13'.
             Should be a date that exists in the LLC dataset
         nperiods (int, optional): Number of periods to sample
-        field_size (tuple, optional): Cutout size in pixels.
+        cutout_size (tuple, optional): Cutout size in pixels.
             Passed to uniform_coords. Defaults to (64,64).
         plot (bool, optional): Plot the spatial distribution?
             Defaults to False.
@@ -115,7 +111,7 @@ def build_table(freq:str='2M', resol=0.5, minmax_lat=None,
 
     """
     # Begin 
-    llc_table = uniform_coords(resol=resol, minmax_lat=minmax_lat, field_size=field_size)
+    llc_table = uniform_coords(resol=resol, minmax_lat=minmax_lat, cutout_size=cutout_size)
 
     # Plot
     if plot:
@@ -134,7 +130,7 @@ def build_table(freq:str='2M', resol=0.5, minmax_lat=None,
     # Return
     return llc_table
 
-def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None, 
+def uniform_coords(resol, cutout_size, CC_max=1e-4, outfile=None, 
            minmax_lat=None, localCC:bool=True,
            rotate:float=None):
     """
@@ -143,7 +139,7 @@ def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None,
     Args:
         resol (float): Typical separation on the healpix grid
         minmax_lat (tuple): Restrict to latitudes given by this range
-        field_size (tuple): Cutout size in pixels
+        cutout_size (tuple): Cutout size in pixels
         outfile (str, optional): If provided, write the table to this outfile.
             Defaults to None.
         localCC (bool, optional):  If True, load the CC_mask locally.
@@ -153,7 +149,7 @@ def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None,
         pandas.DataFrame: Table containing the coords
     """
     # Load up CC_mask
-    CC_mask = load_CC_mask(field_size=field_size, local=localCC)
+    CC_mask = load_CC_mask(cutout_size=cutout_size, local=localCC)
 
     # Cut
     good_CC = CC_mask.CC_mask.values < CC_max
@@ -194,8 +190,8 @@ def uniform_coords(resol, field_size, CC_max=1e-4, outfile=None,
     llc_table['lat'] = llc_lat[gidx]  # Center of cutout
     llc_table['lon'] = llc_lon[gidx]  # Center of cutout
 
-    llc_table['row'] = good_CC_idx[0][gidx] - field_size[0]//2 # Lower left corner
-    llc_table['col'] = good_CC_idx[1][gidx] - field_size[0]//2 # Lower left corner
+    llc_table['row'] = good_CC_idx[0][gidx] - cutout_size[0]//2 # Lower left corner
+    llc_table['col'] = good_CC_idx[1][gidx] - cutout_size[0]//2 # Lower left corner
 
     # Cut on latitutde?
     if minmax_lat is not None:
@@ -259,11 +255,11 @@ def load_coords(verbose=True):
     return coord_ds
 
 
-def load_CC_mask(field_size=(64,64), verbose=True, local=True):
+def load_CC_mask(cutout_size=(64,64), verbose=True, local=True):
     """Load up a CC mask.  Typically used for setting coordinates
 
     Args:
-        field_size (tuple, optional): Field size of the cutouts. Defaults to (64,64).
+        cutout_size (tuple, optional): size of the cutouts. Defaults to (64,64).
         verbose (bool, optional): Defaults to True.
         local (bool, optional): Load from local hard-drive. 
             Requires LLC_DATA env variable.  Defaults to True (these are 3Gb files)
@@ -272,7 +268,7 @@ def load_CC_mask(field_size=(64,64), verbose=True, local=True):
         xr.DataSet: CC_mask
     """
     CC_mask_file = os.path.join(os.getenv('OS_OGCM'), 'LLC', 'data', 'CC',
-                                   'LLC_CC_mask_{}.nc'.format(field_size[0]))
+                                   'LLC_CC_mask_{}.nc'.format(cutout_size[0]))
     CC_mask = xarray.open_dataset(CC_mask_file)
     if verbose:
         print("Loaded LLC CC mask from {}".format(CC_mask_file))
