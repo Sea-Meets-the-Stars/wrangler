@@ -56,14 +56,14 @@ def multi_process(item:tuple, pdict:dict, use_mask=False,
         return None, idx, None
 
     # Run
-    pp_field, meta = main(field, mask, smooth_pix=smooth_pix, **pdict)
+    pp_field, imeta = main(field, mask, smooth_pix=smooth_pix, **pdict)
 
     # Failed?
     if pp_field is None:
         return None, idx, None
 
     # Return
-    return pp_field.astype(np.float32), idx, meta
+    return pp_field.astype(np.float32), idx, imeta
 
 
 def main(cutout, mask, inpaint=False, 
