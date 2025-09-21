@@ -13,7 +13,7 @@ except ImportError:
     print("gsw not imported;  cannot do density calculations")
 
 
-def gradb2_cutout(item:tuple, fixed_km:float=None, field_size:int=None, 
+def gradb2_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None, 
                 dx:float=None, norm_by_b:bool=False, **kwargs):
     """Simple function to measure front related stats
     for a cutout
@@ -22,7 +22,7 @@ def gradb2_cutout(item:tuple, fixed_km:float=None, field_size:int=None,
 
     Args:
         item (tuple): Items for analysis
-        field_size (int, optional): Field size. Defaults to None.
+        cutout_size (int, optional): cutout size. Defaults to None.
         dx (float, optional): Grid spacing in km
         norm_by_b (bool, optional): Normalize by median buoyancy in the image. Defaults to False.
 
@@ -41,7 +41,7 @@ def gradb2_cutout(item:tuple, fixed_km:float=None, field_size:int=None,
 
     # Resize
     if fixed_km is not None:
-        gradb = resize_local_mean(gradb, (field_size, field_size))
+        gradb = resize_local_mean(gradb, (cutout_size, cutout_size))
 
     # Meta
     meta_dict = meta.stats(gradb)
@@ -50,7 +50,7 @@ def gradb2_cutout(item:tuple, fixed_km:float=None, field_size:int=None,
     return gradb, idx, meta_dict
 
 
-def b_cutout(item:tuple, fixed_km:float=None, field_size:int=None, 
+def b_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None, 
              ref_rho:float=1025., g=0.0098, **kwargs):
     """Simple function to grab a density cutout
     
@@ -58,7 +58,7 @@ def b_cutout(item:tuple, fixed_km:float=None, field_size:int=None,
 
     Args:
         item (tuple): Items for analysis
-        field_size (int, optional): Field size. Defaults to None.
+        cutout_size (int, optional): cutout size. Defaults to None.
 
     Returns:
         tuple: int, dict if extract_kin is False
@@ -75,7 +75,7 @@ def b_cutout(item:tuple, fixed_km:float=None, field_size:int=None,
 
     # Resize
     if fixed_km is not None:
-        b = resize_local_mean(b, (field_size, field_size))
+        b = resize_local_mean(b, (cutout_size, cutout_size))
 
     # Meta
     meta_dict = meta.stats(b)
