@@ -13,7 +13,7 @@ except ImportError:
     print("gsw not imported;  cannot do density calculations")
 
 
-def gradb2_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None, 
+def gradb2_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
                 dx:float=None, norm_by_b:bool=False, **kwargs):
     """Simple function to measure front related stats
     for a cutout
@@ -40,7 +40,7 @@ def gradb2_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None,
                        norm_by_b=norm_by_b)
 
     # Resize
-    if fixed_km is not None:
+    if resize:
         gradb = resize_local_mean(gradb, (cutout_size, cutout_size))
 
     # Meta
@@ -50,7 +50,7 @@ def gradb2_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None,
     return gradb, idx, meta_dict
 
 
-def b_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None, 
+def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
              ref_rho:float=1025., g=0.0098, **kwargs):
     """Simple function to grab a density cutout
     
@@ -74,7 +74,7 @@ def b_cutout(item:tuple, fixed_km:float=None, cutout_size:int=None,
     b = g*rho/ref_rho
 
     # Resize
-    if fixed_km is not None:
+    if resize:
         b = resize_local_mean(b, (cutout_size, cutout_size))
 
     # Meta
