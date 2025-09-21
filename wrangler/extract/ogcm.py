@@ -200,7 +200,10 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
 
     # Align pp_fields with the Table
     ppf_idx = wr_utils.match_ids(img_UID, tbl_UID, require_in_match=True)
-    pp_fields = np.array(pp_fields)[ppf_idx]
+    try:
+        pp_fields = np.array(pp_fields)[ppf_idx]
+    except:
+        embed(header='ogcm.py/preproc_field 228')
 
     # Meta time
     good_meta = pandas.DataFrame([item for item in meta if item is not None])
