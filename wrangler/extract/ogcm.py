@@ -63,7 +63,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         coords_ds = wr_llc.load_coords()
     
     # Setup for parallel
-    if field in ['SST','SSS','DivSST2','SSTK', 'SSSs', 'SSH']:
+    if field in ['SST','SSS','DivSST2','SSTK', 'SSSs', 'SSH', 'U', 'V']:
         map_fn = partial(pp_field.multi_process, pdict=pdict)
     elif field in ['Divb2']:
         map_fn = partial(gradb2_cutout, **pdict)
@@ -91,6 +91,10 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     elif field in ['Divb2', 'b']:
         data = ds.Theta.values
         data2 = ds.Salt.values
+    elif field == 'U':
+        data = ds.U.values
+    elif field == 'V':
+        data = ds.V.values
     elif field == 'Fs':
         data = ds.U.values
         data2 = ds.V.values
