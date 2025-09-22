@@ -94,3 +94,31 @@ def match_ids(IDs, match_IDs, require_in_match=True, assume_unique:bool=False):
     rows[in_match] = indices
 
     return rows
+
+def calc_grad2(field:np.ndarray, dx:float):
+    """
+    Calculate the squared magnitude of the gradient of a 2D field.
+
+    This function computes the squared magnitude of the gradient of a 2D array
+    (field) using finite differences. The gradient is calculated along both
+    the x and y axes, and the squared magnitude is returned.
+
+    Parameters:
+        field (np.ndarray): A 2D array representing the field for which the 
+                            gradient magnitude is to be calculated.
+        dx (float): The grid spacing (assumed to be uniform) in both x and y 
+                    directions.
+
+    Returns:
+        np.ndarray: A 2D array of the same shape as `field`, containing the 
+                    squared magnitude of the gradient at each point.
+    """
+
+    # Gradient
+    dfdx = np.gradient(field, axis=1) / dx
+    dfdy = np.gradient(field, axis=0) / dx
+
+    # Magnitude
+    grad_f2 = dfdx**2 + dfdy**2
+
+    return grad_f2

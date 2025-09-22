@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from wrangler.ogcm import llc as wr_llc
 from wrangler.ogcm.preproc import gradb2_cutout, b_cutout 
+from wrangler.ogcm.preproc import Fs_cutout
 from wrangler.preproc import field as pp_field
 from wrangler import defs as wr_defs
 from wrangler import utils as wr_utils
@@ -68,6 +69,8 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         map_fn = partial(gradb2_cutout, **pdict)
     elif field in ['b']:
         map_fn = partial(b_cutout, **pdict)
+    elif field in ['Fs']:  # Frontogenesis tendency
+        map_fn = partial(Fs_cutout, **pdict)
     else:
         raise IOError(f"Not ready for this field {field}")
 
@@ -76,7 +79,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     ds = xarray.open_dataset(filename)
 
     # Field
-    data2 = None
+    data2, data3, data4 = None, None, None
     if field in ['SST', 'DivSST2', 'SSTK']:
         data = ds.Theta.values
         if field == 'SSTK':
@@ -88,6 +91,11 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     elif field in ['Divb2', 'b']:
         data = ds.Theta.values
         data2 = ds.Salt.values
+    elif field == 'Fs':
+        data = ds.U.values
+        data2 = ds.V.values
+        data3 = ds.Theta.values
+        data4 = ds.Salt.values
     else:
         raise IOError(f"Not ready for this field {field}")
 
@@ -95,7 +103,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     sub_UID = llc_table.UID.values
 
     # Load up the cutouts
-    fields, fields2, smooth_pixs = [], [], []
+    fields, fields2, fields3, fields4, smooth_pixs = [], [], []
     for r, c in zip(llc_table.row, llc_table.col):
         if fixed_km is None:
             dr = cutout_size[0]
@@ -122,15 +130,24 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
             fields.append(None)
         else:
             fields.append(data[use_r:use_r+dr, use_c:use_c+dc])
+
         # More?
-        if data2 is not None:
-            fields2.append(data2[use_r:use_r+dr, use_c:use_c+dc])
+        for dataN, fieldsN in zip([data2, data3, data4],
+                               [fields2, fields3, fields4]):
+            if dataN is None:
+                continue
+            if (r+dr >= dataN.shape[0]) or (c+dc > dataN.shape[1]) or (
+                use_r < 0) or (use_c < 0):
+                fieldsN.append(None)
+            else:
+                fieldsN.append(dataN[use_r:use_r+dr, use_c:use_c+dc])
     print("Cutouts loaded for {}".format(filename))
 
     # Prep items
     zipitems = [fields]
-    if len(fields2) > 0:
-        zipitems.append(fields2)
+    for fieldsN in [fields2, fields3, fields4]:
+        if fieldsN is not None:
+            zipitems.append(fieldsN)
     zipitems.append(sub_UID)
     if 'smooth_km' in pdict.keys():
         zipitems.append(smooth_pixs)
