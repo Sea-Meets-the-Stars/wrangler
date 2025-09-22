@@ -32,10 +32,12 @@ def gradb2_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     """
     # Unpack
     Theta_cutout, Salt_cutout, idx = item
+
+    # All None?
     if Theta_cutout is None or Salt_cutout is None:
         return None, idx, None
 
-    # Check for all NaNs
+    # Check for any NaNs
     if np.any(np.isnan(Theta_cutout)) or np.any(np.isnan(Salt_cutout)):
         return None, idx, None
 
@@ -76,6 +78,11 @@ def Fs_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     if Theta_cutout is None or Salt_cutout is None:
         return None, idx, None
 
+    # Check for any NaNs in any field
+    if np.any(np.isnan(Theta_cutout)) or np.any(np.isnan(Salt_cutout)) or \
+       np.any(np.isnan(U_cutout)) or np.any(np.isnan(V_cutout)):
+        return None, idx, None
+
     # Calculate
     Fs = calc_F_s(U_cutout, V_cutout, Theta_cutout, Salt_cutout, dx=dx)
 
@@ -106,6 +113,9 @@ def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     # Unpack
     Theta_cutout, Salt_cutout, idx = item
     if Theta_cutout is None or Salt_cutout is None:
+        return None, idx, None
+    # Check for NaNs
+    if np.any(np.isnan(Theta_cutout)) or np.any(np.isnan(Salt_cutout)):
         return None, idx, None
 
     # Calculate
