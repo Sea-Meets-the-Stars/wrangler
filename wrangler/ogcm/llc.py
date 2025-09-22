@@ -85,6 +85,7 @@ def add_uid(df:pandas.DataFrame):
 
 
 def build_table(freq:str='2M', resol=0.5, minmax_lat=None, 
+                sampling:str='uniform',
                 init_date:str='2011-09-13',
                 cutout_size=(64,64), nperiods:int=6, 
                 plot:bool=False):
@@ -98,6 +99,9 @@ def build_table(freq:str='2M', resol=0.5, minmax_lat=None,
             Typical separation of images in deg
         minmax_lat (tuple, optional): Restrict to latitudes given by this range
             Passed to uniform_coords
+        sampling (str, optional): Sampling strategy.
+            Currently only 'uniform' is implemented.
+            Defaults to 'uniform'.
         init_date (str, optional): Start date. Defaults to '2011-09-13'.
             Should be a date that exists in the LLC dataset
         nperiods (int, optional): Number of periods to sample
@@ -110,7 +114,10 @@ def build_table(freq:str='2M', resol=0.5, minmax_lat=None,
         pandas.DataFrame: Table containing the coords
 
     """
-    # Begin 
+    
+    # Spatial sampling
+    if sampling != 'uniform':
+        raise NotImplementedError("Only sampling='uniform' is implemented")
     llc_table = uniform_coords(resol=resol, minmax_lat=minmax_lat, cutout_size=cutout_size)
 
     # Plot
