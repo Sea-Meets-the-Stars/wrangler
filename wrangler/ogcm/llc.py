@@ -224,7 +224,7 @@ def grab_llc_datafile(datetime=None, root='LLC4320_', chk=True, data_path:str=No
     """
     if data_path is None:
         data_path = os.path.join(os.getenv('OS_OGCM'), 'LLC', 'data',
-                                      'ThetaUVSalt')
+                                      'ThetaUVWSaltEta')
         
     if datetime is not None:
         sdate = str(datetime).replace(':','_')[:19]
