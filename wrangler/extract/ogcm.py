@@ -103,7 +103,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     sub_UID = llc_table.UID.values
 
     # Load up the cutouts
-    fields, fields2, fields3, fields4, smooth_pixs = [], [], []
+    fields, fields2, fields3, fields4, smooth_pixs = [], [], [], [], []
     for r, c in zip(llc_table.row, llc_table.col):
         if fixed_km is None:
             dr = cutout_size[0]
