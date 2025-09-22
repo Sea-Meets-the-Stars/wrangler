@@ -150,7 +150,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     # Prep items
     zipitems = [fields]
     for fieldsN in [fields2, fields3, fields4]:
-        if fieldsN is not None:
+        if len(fieldsN) > 0:
             zipitems.append(fieldsN)
     zipitems.append(sub_UID)
     if 'smooth_km' in pdict.keys():
