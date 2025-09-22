@@ -35,6 +35,10 @@ def gradb2_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     if Theta_cutout is None or Salt_cutout is None:
         return None, idx, None
 
+    # Check for all NaNs
+    if np.any(np.isnan(Theta_cutout)) or np.any(np.isnan(Salt_cutout)):
+        return None, idx, None
+
     # Calculate
     gradb = calc_gradb2(Theta_cutout, Salt_cutout, dx=dx,
                        norm_by_b=norm_by_b)
