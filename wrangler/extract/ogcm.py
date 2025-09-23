@@ -231,7 +231,6 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     final_meta = pandas.DataFrame()
     #tbl_idx = wr_utils.match_ids(img_UID[good_idx], tbl_UID, require_in_match=True)
 
-    embed(header='extract 233')
     for key in good_meta.keys():
         final_meta[key] = np.zeros(len(ppf_idx))
         # Align with images
