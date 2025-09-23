@@ -228,12 +228,18 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     # Meta time
     good_meta = pandas.DataFrame([item for item in meta if item is not None])
     final_meta = pandas.DataFrame()
-    tbl_idx = wr_utils.match_ids(img_UID[good_idx], tbl_UID, require_in_match=True)
+    #tbl_idx = wr_utils.match_ids(img_UID[good_idx], tbl_UID, require_in_match=True)
 
+    embed(header='extract 233')
     for key in good_meta.keys():
         final_meta[key] = np.zeros(len(ppf_idx))
-        #
-        final_meta.loc[tbl_idx, key] = good_meta[key].values
+        # Align with images
+        final_meta.loc[good_idx, key] = good_meta[key].values
+        #final_meta.loc[tbl_idx, key] = good_meta[key].values
+
+    # Add index of the images
+    final_meta['gidx'] = -1
+    final_meta.loc[good_idx, 'gidx'] = np.arange(len(good_idx))
 
     # Return
     return success, pp_fields, final_meta, filename
