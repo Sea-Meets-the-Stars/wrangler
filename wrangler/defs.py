@@ -99,9 +99,9 @@ tbl_dmodel = {
                 help='Filename of the pre-processed file holding the cutout'),
     'pp_idx': dict(dtype=(int,np.integer), 
                 help='Index describing position of the cutout in the pp_file'),
-    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0,1), 
-                    valid=0, train=1, init=-1,
-                    help='-1: illdefined, 0: valid, 1: train'),
+    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0, 1, 2), 
+                    valid=0, train=1, init=-1, test=2,
+                    help='-1: illdefined, 0: valid, 1: train, 2: test'),
                     # In Ulmo, we use 1 for the subset of training and 0 for the rest
                     # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
     'UID': dict(dtype=np.int64,
