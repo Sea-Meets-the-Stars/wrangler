@@ -27,10 +27,48 @@ def check_items(items):
 
     return True
 
+
+def gradfield2_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
+                dx:float=None, **kwargs):
+    """ Generate |grad field|^2 cutout
+    
+    Enables multi-processing
+
+    Args:
+        item (tuple): Items for analysis
+            field_cutout, Salt_cutout, idx
+        resize (bool, optional): Resize output?. Defaults to False.
+        cutout_size (int, optional): cutout size. Defaults to None.
+        dx (float, optional): Grid spacing in km
+        norm_by_b (bool, optional): Normalize by median buoyancy in the image. Defaults to False.
+
+    Returns:
+        tuple: int, dict if extract_kin is False
+            Otherwise, int, dict, np.ndarray, np.ndarray (F_s, gradb)
+    """
+    # Checks
+    if not check_items(item):
+        return None, item[-1], None
+
+    # Unpack
+    field_cutout, idx = item
+
+    # Calculate
+    grad = utils.calc_grad2(field_cutout, dx)
+
+    # Resize
+    if resize:
+        grad = resize_local_mean(grad, (cutout_size, cutout_size))
+
+    # Meta
+    meta_dict = meta.stats(grad)
+
+    # Return
+    return grad, idx, meta_dict
+
 def gradb2_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
                 dx:float=None, norm_by_b:bool=False, **kwargs):
-    """Simple function to measure front related stats
-    for a cutout
+    """ Generate |grad b|^2 cutout
     
     Enables multi-processing
 

@@ -12,9 +12,9 @@ from tqdm import tqdm
 
 from wrangler.ogcm import llc as wr_llc
 from wrangler.ogcm.preproc import gradb2_cutout, b_cutout 
+from wrangler.ogcm.preproc import gradfield2_cutout
 from wrangler.ogcm.preproc import Fs_cutout, okuboweiss_cutout
 from wrangler.preproc import field as pp_field
-from wrangler import defs as wr_defs
 from wrangler import utils as wr_utils
 
 from IPython import embed
@@ -63,8 +63,10 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         coords_ds = wr_llc.load_coords()
     
     # Setup for parallel
-    if field in ['SST','SSS','DivSST2','SSTK', 'SSSs', 'SSH', 'U', 'V', 'SSHs']:
+    if field in ['SST','SSS','SSTK', 'SSSs', 'SSH', 'U', 'V', 'SSHs']:
         map_fn = partial(pp_field.multi_process, pdict=pdict)
+    elif field in ['DivSST2']:
+        map_fn = partial(gradfield2_cutout, **pdict)
     elif field in ['Divb2']:
         map_fn = partial(gradb2_cutout, **pdict)
     elif field in ['b']:
