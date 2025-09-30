@@ -178,8 +178,8 @@ def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     # Return
     return b, idx, meta_dict
 
-def okuboweiss_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
-                dx:float=None, **kwargs):
+def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
+                   field;str=None, dx:float=None, **kwargs):
     """ Generate Okubo-Weiss
     
     Enables multi-processing
@@ -190,8 +190,8 @@ def okuboweiss_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
             U, V assumed to be in m/s
         resize (bool, optional): Resize output?. Defaults to False.
         cutout_size (int, optional): cutout size. Defaults to None.
+        field (str)
         dx (float, optional): Grid spacing in km
-        norm_by_b (bool, optional): Normalize by median buoyancy in the image. Defaults to False.
 
     Returns:
         tuple: int, dict if extract_kin is False
@@ -205,17 +205,26 @@ def okuboweiss_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     U_cutout, V_cutout, idx = item
 
     # Calculate
-    gradb = calc_okubo_weiss(U_cutout, V_cutout, dx=dx)
+    if field is None:
+        raise IOError("Must specify field!")
+    elif field == 'OW':
+        ifield = calc_okubo_weiss(U_cutout, V_cutout, dx=dx)
+    elif field == 'strain_rate':
+        ifield = calc_lateral_strain_rate(U_cutout, V_cutout, dx=dx)
+    elif field == 'divergence':
+        ifield = calc_div(U_cutout, V_cutout, dx=dx)
+    else:
+        raise IOError(f"The current field={field} is not supported!")
 
     # Resize
     if resize:
-        gradb = resize_local_mean(gradb, (cutout_size, cutout_size))
+        ifield = resize_local_mean(ifield, (cutout_size, cutout_size))
 
     # Meta
-    meta_dict = meta.stats(gradb)
+    meta_dict = meta.stats(ifield)
 
     # Return
-    return gradb, idx, meta_dict
+    return ifield, idx, meta_dict
 
 
 
@@ -300,7 +309,7 @@ def calc_F_s(U:np.ndarray, V:np.ndarray,
     else:
         return F_s
 
-def calc_div(U:np.ndarray, V:np.ndarray):
+def calc_div(U:np.ndarray, V:np.ndarray, dx:float=2.):
     """Calculate the divergence
 
     Args:
@@ -314,7 +323,7 @@ def calc_div(U:np.ndarray, V:np.ndarray):
     dVdy = np.gradient(V, axis=0)
     div = dUdx + dVdy
     #
-    return div
+    return div / (dx*1e3)**2
 
 def calc_curl(U:np.ndarray, V:np.ndarray):  # Also the relative or vertical vorticity?!
     """Calculate the curl (aka relative vorticity)
@@ -365,12 +374,13 @@ def calc_shear_strain(U:np.ndarray, V:np.ndarray):
     # Return
     return shear_strain
 
-def calc_lateral_strain_rate(U:np.ndarray, V:np.ndarray):
+def calc_lateral_strain_rate(U:np.ndarray, V:np.ndarray, dx:float=2.):
     """Calculate the lateral strain rate
 
     Args:
         U (np.ndarray): U velocity field
         V (np.ndarray): V velocity field
+        dx (float, optional): Grid spacing in km
 
     Returns:
         np.ndarray: alpha
@@ -381,7 +391,7 @@ def calc_lateral_strain_rate(U:np.ndarray, V:np.ndarray):
     dVdy = np.gradient(V, axis=0)
     #
     alpha = np.sqrt((dUdx-dVdy)**2 + (dVdx+dUdy)**2)
-    return alpha
+    return alpha / (dx*1e3)**2
 
 def calc_okubo_weiss(U:np.ndarray, V:np.ndarray, dx:float=2.):
     """Calculate Okubo-Weiss

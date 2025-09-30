@@ -13,7 +13,7 @@ from tqdm import tqdm
 from wrangler.ogcm import llc as wr_llc
 from wrangler.ogcm.preproc import gradb2_cutout, b_cutout 
 from wrangler.ogcm.preproc import gradfield2_cutout
-from wrangler.ogcm.preproc import Fs_cutout, okuboweiss_cutout
+from wrangler.ogcm.preproc import Fs_cutout, current_cutout
 from wrangler.preproc import field as pp_field
 from wrangler import utils as wr_utils
 
@@ -73,8 +73,9 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         map_fn = partial(b_cutout, **pdict)
     elif field in ['Fs']:  # Frontogenesis tendency
         map_fn = partial(Fs_cutout, **pdict)
-    elif field in ['OW']:  # Okubo-Weiss
-        map_fn = partial(okuboweiss_cutout, **pdict)
+    elif field in ['OW', 'strain_rate']:  # Current fields
+        pdict['field'] = field
+        map_fn = partial(current_cutout, **pdict)
     else:
         raise IOError(f"Not ready for this field {field}")
 
