@@ -179,7 +179,7 @@ def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     return b, idx, meta_dict
 
 def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
-                   field;str=None, dx:float=None, **kwargs):
+                   field:str=None, dx:float=None, **kwargs):
     """ Generate Okubo-Weiss
     
     Enables multi-processing
