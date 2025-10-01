@@ -73,7 +73,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         map_fn = partial(b_cutout, **pdict)
     elif field in ['Fs']:  # Frontogenesis tendency
         map_fn = partial(Fs_cutout, **pdict)
-    elif field in ['OW', 'strain_rate']:  # Current fields
+    elif field in ['OW', 'strain_rate', 'divergence']:  # Current fields
         pdict['field'] = field
         map_fn = partial(current_cutout, **pdict)
     else:
@@ -105,7 +105,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         data2 = ds.V.values
         data3 = ds.Theta.values
         data4 = ds.Salt.values
-    elif field == 'OW':
+    elif field in ['OW', 'strain_rate', 'divergence']:
         data = ds.U.values
         data2 = ds.V.values
     else:
