@@ -22,6 +22,32 @@ def latlon_for_cutout(latlon:tuple, cutout_size:int, dx:float):
     return lat_img, lon_img
 
 def latlons_for_cutouts(latlons:np.ndarray, cutout_size:int, dx:float):
+    """
+    Generate latitude and longitude grids for cutouts based on input coordinates.
+    Parameters:
+    -----------
+    latlons : np.ndarray
+        A 2D array containing latitude and longitude values. 
+        Expected shape is (2, n), where the first row contains latitudes 
+        and the second row contains longitudes.
+    cutout_size : int
+        The size of the square cutout grid (number of points along one side).
+    dx : float
+        The spacing between grid points in kilometers.
+    Returns:
+    --------
+    lat_imgs : np.ndarray
+        A 3D array of latitude grids for each cutout. 
+        Shape: (ncutouts, cutout_size, cutout_size).
+    lon_imgs : np.ndarray
+        A 3D array of longitude grids for each cutout. 
+        Shape: (ncutouts, cutout_size, cutout_size).
+    Notes:
+    ------
+    - The function assumes that the input latitudes and longitudes are in degrees.
+    - The spacing `dx` is converted to degrees using a constant conversion factor.
+    - Longitude adjustments account for the convergence of meridians at higher latitudes.
+    """
 
     # Unpack
     lats, lons = latlons
