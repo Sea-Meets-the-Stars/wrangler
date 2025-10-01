@@ -1,6 +1,8 @@
 
 import numpy as np
 
+from IPython import embed
+
 # Prepping
 R_earth = 6371. # km
 circum = 2 * np.pi* R_earth
@@ -30,7 +32,7 @@ def latlons_for_cutouts(latlons:np.ndarray, cutout_size:int, dx:float):
     lons.resize(ncutouts,1,1)
     
     # Latitudes
-    dlats = np.arange(cutout_size)*dx / km_deg
+    dlats = (np.arange(cutout_size) - cutout_size//2)*dx / km_deg
     dlat_img = np.outer(dlats, np.ones(cutout_size))
 
     lat_imgs = np.ones((ncutouts, cutout_size, cutout_size)) * lats
@@ -38,8 +40,9 @@ def latlons_for_cutouts(latlons:np.ndarray, cutout_size:int, dx:float):
 
     # Longitudes
     lon_imgs = np.ones((ncutouts, cutout_size, cutout_size)) * lons
-    dlons = np.ones((ncutouts, cutout_size, cutout_size)) / np.cos(lons*np.pi/180.)
-    dlons += dlats
+
+    dlon_img = dlat_img.T
+    dlons = np.ones((ncutouts, cutout_size, cutout_size)) * dlon_img / np.cos(lons*np.pi/180.)
 
     lon_imgs += dlons
 
