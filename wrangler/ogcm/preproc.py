@@ -213,6 +213,8 @@ def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
         ifield = calc_lateral_strain_rate(U_cutout, V_cutout, dx=dx)
     elif field == 'divergence':
         ifield = calc_div(U_cutout, V_cutout, dx=dx)
+    elif field == 'vorticity':
+        ifield = calc_vorticity(U_cutout, V_cutout, dx=dx)
     else:
         raise IOError(f"The current field={field} is not supported!")
 
@@ -323,7 +325,7 @@ def calc_div(U:np.ndarray, V:np.ndarray, dx:float=2.):
     dVdy = np.gradient(V, axis=0)
     div = dUdx + dVdy
     #
-    return div / (dx*1e3)**2
+    return div / (dx*1e3)
 
 def calc_curl(U:np.ndarray, V:np.ndarray):  # Also the relative or vertical vorticity?!
     """Calculate the curl (aka relative vorticity)
@@ -385,13 +387,29 @@ def calc_lateral_strain_rate(U:np.ndarray, V:np.ndarray, dx:float=2.):
     Returns:
         np.ndarray: alpha
     """
-    dUdx = np.gradient(U, axis=1)
-    dUdy = np.gradient(U, axis=0)
-    dVdx = np.gradient(V, axis=1)
-    dVdy = np.gradient(V, axis=0)
-    #
-    alpha = np.sqrt((dUdx-dVdy)**2 + (dVdx+dUdy)**2)
-    return alpha / (dx*1e3)**2
+    sigma_n = calc_normal_strain(U, V)
+    sigma_s = calc_shear_strain(U, V)
+    alpha = np.sqrt(sigma_n**2 + sigma_s**2)
+    # 
+    return alpha / (dx*1e3)
+
+def calc_vorticity(U:np.ndarray, V:np.ndarray, dx:float=2.):
+    """Calculate Okubo-Weiss
+
+    Args:
+        U (np.ndarray): U velocity field
+            Assumed m/s
+        V (np.ndarray): V velocity field
+            Assumed m/s
+        dx (float, optional): Grid spacing in km
+
+    Returns:
+        np.ndarray: okubo-weiss
+    """
+    Omega = calc_curl(U, V)  # aka relative vorticity
+
+    # Return
+    return Omega / (dx*1e3)
 
 def calc_okubo_weiss(U:np.ndarray, V:np.ndarray, dx:float=2.):
     """Calculate Okubo-Weiss
@@ -408,9 +426,9 @@ def calc_okubo_weiss(U:np.ndarray, V:np.ndarray, dx:float=2.):
     """
     s_n = calc_normal_strain(U, V)
     s_s = calc_shear_strain(U, V)
-    w = calc_curl(U, V)  # aka relative vorticity
+    Omega = calc_curl(U, V)  # aka relative vorticity
     #
-    W = s_n**2 + s_s**2 - w**2
+    W = s_n**2 + s_s**2 - Omega**2
 
     # Return
     return W / (dx*1e3)**2
