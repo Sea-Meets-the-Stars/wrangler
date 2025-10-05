@@ -105,7 +105,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         data2 = ds.V.values
         data3 = ds.Theta.values
         data4 = ds.Salt.values
-    elif field in ['OW', 'strain_rate', 'divergence']:
+    elif field in ['OW', 'strain_rate', 'divergence', 'vorticity']:
         data = ds.U.values
         data2 = ds.V.values
     else:
