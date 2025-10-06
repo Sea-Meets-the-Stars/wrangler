@@ -465,8 +465,14 @@ def calc_curvatureradius(U:np.ndarray, V:np.ndarray, dx:float=2.):
     # Geostrophic speed
     geo_speed = np.sqrt(U**2 + V**2)
 
-    # Radius of curvature
-    R = geo_speed**3 / (U**2*dVdx - V**2*dUdy + U*V*(dVdy-dUdx))
+    # Avoid divide by 0
+    denom = U**2*dVdx - V**2*dUdy + U*V*(dVdy-dUdx)
+    bad = denom == 0.
+    R = geo_speed**3 
+    R[~bad] /= denom[~bad]
+    R[bad] = np.nan
+
+    # Finish
     R /= dx*1e3  
     return R
 
