@@ -11,21 +11,21 @@ from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
 from wrangler.ogcm import llc as wr_llc
-from wrangler.ogcm.preproc import gradb2_cutout, b_cutout 
-from wrangler.ogcm.preproc import gradfield2_cutout
-from wrangler.ogcm.preproc import Fs_cutout, current_cutout
+from wrangler.preproc.pp_ogcm import gradb2_cutout, b_cutout 
+from wrangler.preproc.pp_ogcm import gradfield2_cutout
+from wrangler.preproc.pp_ogcm import Fs_cutout, current_cutout
 from wrangler.preproc import field as pp_field
 from wrangler import utils as wr_utils
 
 from IPython import embed
 
 
-def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str, 
+def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str, 
                      cutout_size=(64,64), fixed_km=None, n_cores=10, 
                      coords_ds=None, test_failures:bool=False, 
                      test_process:bool=False, debug=False):
-    """Main routine to extract and pre-process LLC data for later SST analysis
-    The llc_table is modified in place (and also returned).
+    """Main routine to extract and pre-process LLC data for a single 
+        timestamp
 
     Args:
         llc_table (pandas.DataFrame): cutout table
