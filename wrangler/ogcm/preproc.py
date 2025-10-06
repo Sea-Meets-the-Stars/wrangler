@@ -144,7 +144,7 @@ def Fs_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     return Fs, idx, meta_dict
 
 def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None, 
-             ref_rho:float=1025., g=0.0098, **kwargs):
+             ref_rho:float=1025., g:float=0.0098, **kwargs):
     """Simple function to grab a density cutout
     
     Enables multi-processing
@@ -152,6 +152,10 @@ def b_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
     Args:
         item (tuple): Items for analysis
         cutout_size (int, optional): cutout size. Defaults to None.
+        g (float, optional): Acceleration due to gravity
+            in km/s^2
+        ref_rho (float, optional): Reference density
+            in kg/m^3
 
     Returns:
         tuple: int, dict if extract_kin is False
@@ -202,7 +206,10 @@ def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
         return None, item[-1], None
 
     # Unpack
-    U_cutout, V_cutout, idx = item
+    if field == 'Cu':
+        U_cutout, V_cutout, f, idx = item
+    else:
+        U_cutout, V_cutout, idx = item
 
     # Calculate
     if field is None:
@@ -215,6 +222,8 @@ def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
         ifield = calc_div(U_cutout, V_cutout, dx=dx)
     elif field == 'vorticity':
         ifield = calc_vorticity(U_cutout, V_cutout, dx=dx)
+    elif field == 'Cu':
+        ifield = calc_curvaturenumber(U_cutout, V_cutout, f, dx=dx)
     else:
         raise IOError(f"The current field={field} is not supported!")
 
@@ -432,3 +441,55 @@ def calc_okubo_weiss(U:np.ndarray, V:np.ndarray, dx:float=2.):
 
     # Return
     return W / (dx*1e3)**2
+
+def calc_curvatureradius(U:np.ndarray, V:np.ndarray, dx:float=2.):
+    """Calculate the curvature number
+
+    Args:
+        U (np.ndarray): U velocity field
+            Assumed m/s
+        V (np.ndarray): V velocity field
+            Assumed m/s
+        f (float): Coriolis parameter
+        dx (float, optional): Grid spacing in km
+
+    Returns:
+        np.ndarray: okubo-weiss
+    """
+
+    # Partials
+    dUdx = np.gradient(U, axis=1)
+    dVdy = np.gradient(V, axis=0)
+    dUdy = np.gradient(U, axis=0)
+    dVdx = np.gradient(V, axis=1)
+
+    # Geostrophic speed
+    geo_speed = np.sqrt(U**2 + V**2)
+
+    # Radius of curvature
+    R = (geo_speed**3) / np.abs(U**2*dVdx - V**2*dUdy U*V*(dVdy-dUdx))
+    R /= dx*1e3  
+
+def calc_curvaturenumber(U:np.ndarray, V:np.ndarray, f:float, dx:float=2.):
+    """Calculate the curvature number
+
+    Args:
+        U (np.ndarray): U velocity field
+            Assumed m/s
+        V (np.ndarray): V velocity field
+            Assumed m/s
+        f (float): Coriolis parameter
+        dx (float, optional): Grid spacing in km
+
+    Returns:
+        np.ndarray: okubo-weiss
+    """
+    # Geostrophic speed
+    geo_speed = np.sqrt(U**2 + V**2)
+
+    # Radius of curvature
+    R = calc_curvatureradius(U, V, dx=dx)
+
+    # Cu
+    Cu = 2*geo_speed / (f*R)
+    return Cu

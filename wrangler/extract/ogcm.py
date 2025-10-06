@@ -105,7 +105,8 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         data2 = ds.V.values
         data3 = ds.Theta.values
         data4 = ds.Salt.values
-    elif field in ['OW', 'strain_rate', 'divergence', 'vorticity']:
+    elif field in ['OW', 'strain_rate', 'divergence', 
+                   'vorticity', 'Cu']:
         data = ds.U.values
         data2 = ds.V.values
     else:
@@ -153,6 +154,12 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
                 fieldsN.append(None)
             else:
                 fieldsN.append(dataN[use_r:use_r+dr, use_c:use_c+dc])
+
+        # Other special cases
+        if field == 'Cu':
+            # Generate f
+            data3 = wr_utils.coriolis(llc_table.lat.values).tolist()
+
     print("Cutouts loaded for {}".format(filename))
 
     # Prep items
@@ -165,27 +172,6 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         zipitems.append(smooth_pixs)
     items = [item for item in zip(*zipitems)]
 
-    # Test processing
-    if test_process:
-        embed(header='extract.py/preproc_field 145')
-        idx = 50
-        img, tmeta = process.preproc_field(fields[idx], None, **pdict)
-        #img, iidx, tmeta = po_fronts.anly_cutout(
-        #    items[idx], **pdict)
-        '''
-        # Smoothing
-        img, tmeta = process.preproc_field(fields[idx], None,
-                                smooth_pix=smooth_pixs[idx], 
-                                **pdict)
-        # 
-        '''
-        from matplotlib import pyplot as plt
-        fig = plt.figure(figsize=(8,8))
-        plt.clf()
-        plt.imshow(img, origin='lower')
-        plt.show()
-
-    #embed(header='207 of ogcm.py/preproc_datetime')
     # Multi-process time
     with ProcessPoolExecutor(max_workers=n_cores) as executor:
         chunksize = len(items) // n_cores if len(items) // n_cores > 0 else 1
