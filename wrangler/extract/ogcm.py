@@ -73,7 +73,8 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
         map_fn = partial(b_cutout, **pdict)
     elif field in ['Fs']:  # Frontogenesis tendency
         map_fn = partial(Fs_cutout, **pdict)
-    elif field in ['OW', 'strain_rate', 'divergence', 'vorticity', 'Cu']:  # Current fields
+    elif field in ['OW', 'strain_rate', 'divergence', 'vorticity', 
+                   'Cu']:  # Current fields
         pdict['field'] = field
         map_fn = partial(current_cutout, **pdict)
     else:
@@ -155,10 +156,10 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
             else:
                 fieldsN.append(dataN[use_r:use_r+dr, use_c:use_c+dc])
 
-        # Other special cases
-        if field == 'Cu':
-            # Generate f
-            data3 = wr_utils.coriolis(llc_table.lat.values).tolist()
+    # Other special cases
+    if field == 'Cu':  # This needs to come after the above for loop
+        # Generate f
+        data3 = wr_utils.coriolis(llc_table.lat.values).tolist()
 
     print("Cutouts loaded for {}".format(filename))
 
