@@ -159,7 +159,7 @@ def preproc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str
     # Other special cases
     if field == 'Cu':  # This needs to come after the above for loop
         # Generate f
-        data3 = wr_utils.coriolis(llc_table.lat.values).tolist()
+        fields3 = wr_utils.coriolis(llc_table.lat.values).tolist()
 
     print("Cutouts loaded for {}".format(filename))
 
