@@ -173,6 +173,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
         zipitems.append(smooth_pixs)
     items = [item for item in zip(*zipitems)]
 
+    embed(header='debug 176 of ex_ogcm.py')
     # Multi-process time
     with ProcessPoolExecutor(max_workers=n_cores) as executor:
         chunksize = len(items) // n_cores if len(items) // n_cores > 0 else 1
