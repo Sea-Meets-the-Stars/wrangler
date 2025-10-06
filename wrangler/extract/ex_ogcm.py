@@ -74,7 +74,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
     elif field in ['Fs']:  # Frontogenesis tendency
         map_fn = partial(Fs_cutout, **pdict)
     elif field in ['OW', 'strain_rate', 'divergence', 'vorticity', 
-                   'Cu']:  # Current fields
+                   'Cu', 'L']:  # Current fields
         pdict['field'] = field
         map_fn = partial(current_cutout, **pdict)
     else:
@@ -107,7 +107,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
         data3 = ds.Theta.values
         data4 = ds.Salt.values
     elif field in ['OW', 'strain_rate', 'divergence', 
-                   'vorticity', 'Cu']:
+                   'vorticity', 'Cu', 'L']:
         data = ds.U.values
         data2 = ds.V.values
     else:
@@ -157,7 +157,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
                 fieldsN.append(dataN[use_r:use_r+dr, use_c:use_c+dc])
 
     # Other special cases
-    if field == 'Cu':  # This needs to come after the above for loop
+    if field in ['Cu', 'L']:  # This needs to come after the above for loop
         # Generate f
         fields3 = wr_utils.coriolis(llc_table.lat.values).tolist()
 

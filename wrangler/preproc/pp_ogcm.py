@@ -206,7 +206,7 @@ def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
         return None, item[-1], None
 
     # Unpack
-    if field == 'Cu':
+    if field in ['Cu', 'L']:
         U_cutout, V_cutout, f, idx = item
     else:
         U_cutout, V_cutout, idx = item
@@ -224,6 +224,8 @@ def current_cutout(item:tuple, resize:bool=False, cutout_size:int=None,
         ifield = calc_vorticity(U_cutout, V_cutout, dx=dx)
     elif field == 'Cu':
         ifield = calc_curvaturenumber(U_cutout, V_cutout, f, dx=dx)
+    elif field == 'L':
+        ifield = calc_angmomentum(U_cutout, V_cutout, f, dx=dx)
     else:
         raise IOError(f"The current field={field} is not supported!")
 
@@ -499,3 +501,28 @@ def calc_curvaturenumber(U:np.ndarray, V:np.ndarray, f:float, dx:float=2.):
     # Cu
     Cu = 2*geo_speed / (f*R)
     return Cu
+
+def calc_angmomentum(U:np.ndarray, V:np.ndarray, f:float, dx:float=2.):
+    """Calculate the angular momentum
+
+    Args:
+        U (np.ndarray): U velocity field
+            Assumed m/s
+        V (np.ndarray): V velocity field
+            Assumed m/s
+        f (float): Coriolis parameter
+        dx (float, optional): Grid spacing in km
+
+    Returns:
+        np.ndarray: okubo-weiss
+    """
+    # Geostrophic speed
+    geo_speed = np.sqrt(U**2 + V**2)
+
+    # Radius of curvature
+    R = calc_curvatureradius(U, V, dx=dx)
+
+    # L
+    L = R*geo_speed + f*R**2/2
+
+    return L
