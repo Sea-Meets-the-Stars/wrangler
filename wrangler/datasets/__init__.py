@@ -2,6 +2,7 @@ from wrangler.utils import all_subclasses
 
 from wrangler.datasets import base 
 from wrangler.datasets import sst
+from wrangler.datasets import ssh
 
 def dataset_classes():
     import numpy as np

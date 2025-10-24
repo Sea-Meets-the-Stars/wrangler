@@ -3,15 +3,16 @@ import os
 from io import BytesIO
 import pandas
 
-from wrangler import io as wrangler_io
+from wrangler import s3_io as wrangler_io
 
 
-def load_main_table(tbl_file:str, verbose=True):
+def load_main_table(tbl_file:str, verbose=True, process_masked:bool=False):
     """Load the table of cutouts 
 
     Args:
         tbl_file (str): Path to table of cutouts. Local or s3
         verbose (bool, optional): [description]. Defaults to True.
+        process_masked (bool, optional): If True, convert masked int columns to pandas nullable Int64 dtype. Defaults to False.
 
     Raises:
         IOError: [description]
@@ -43,9 +44,11 @@ def load_main_table(tbl_file:str, verbose=True):
         raise IOError("Bad table extension: ")
 
     # Deal with masked int columns
-    for key in ['gradb_Npos', 'FS_Npos', 'UID', 'pp_type']:
-        if key in main_table.keys():
-            main_table[key] = pandas.array(main_table[key].values, dtype='Int64')
+    if process_masked:
+        for key in ['gradb_Npos', 'FS_Npos', 'UID', 'pp_type']:
+            if key in main_table.keys():
+                main_table[key] = pandas.array(main_table[key].values, dtype='Int64')
+
     # Report
     if verbose:
         print("Read main table: {}".format(tbl_file))

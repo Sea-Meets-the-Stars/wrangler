@@ -1,0 +1,160 @@
+""" Scripts to wrangle the PNGs into a single h5 file """
+
+import os
+import glob
+
+import numpy as np
+import h5py
+
+import pandas
+
+import matplotlib.image as mpimg
+
+from IPython import embed
+
+swot_path = os.getenv('SWOT_PNGs')
+
+def wrangle_one_pass(ipass:int=None, path:str=None, outf:str=None,
+                     npix:int=55, debug:bool=False,
+                     meta_idx:bool=True,
+                     ntotal:int=None, train_frac=0.):
+
+    if path is None:
+        path = os.getenv('SWOT_PNGs')
+    if outf is None:
+        outf = os.path.join(path, f'Pass_{ipass:03d}.h5')
+
+    if ipass is not None:
+        files = glob.glob(os.path.join(
+            path, f'Pass_{ipass:03d}', 'ssr_*.png'))
+    else:
+        files = glob.glob(os.path.join(path, '*.png'))
+
+    # Sort the files
+    files = sorted(files)
+
+    # Loop on the files
+    all_imgs = []
+    idx0, idx1, idx2 = [], [], []
+    row, col = [], []
+    sv_files = []
+    if ntotal is None:
+        ntotal = 100000000
+
+    break_me = False
+    count = 0
+    for kk, ifile in enumerate(files):
+        if (debug and kk > 2) or break_me:
+            break
+        print(f'Processing {kk+1}/{len(files)}')
+        # Read the image
+        img = mpimg.imread(ifile)
+        # Indices
+        basef = os.path.basename(ifile)
+        # 
+        sub_imgs = []
+        for irow in range(img.shape[0]//npix):
+            if break_me:
+                break
+            for jcol in range(img.shape[1]//npix):
+                sub_imgs.append(img[irow*npix:(irow+1)*npix, jcol*npix:(jcol+1)*npix, 0])
+                #
+                if meta_idx:
+                    idx0.append(int(basef.split('_')[1]))
+                    idx1.append(int(basef.split('_')[2]))
+                    idx2.append(int(basef.split('_')[3]))
+                # Row, col
+                row.append(irow)
+                col.append(jcol)
+                # File
+                sv_files.append(ifile)
+                count += 1
+                # Break?
+                if count >= ntotal:
+                    break_me = True
+                    break
+
+        all_imgs.append(np.array(sub_imgs))
+
+    # Stack the images
+    all_imgs = np.concatenate(all_imgs)#, axis=0)
+
+    # Recast
+    if meta_idx:
+        idx0 = np.array(idx0, dtype=np.int32)
+        idx1 = np.array(idx1, dtype=np.int32)
+        idx2 = np.array(idx2, dtype=np.int32)
+    row = np.array(row, dtype=np.int32)
+    col = np.array(col, dtype=np.int32)
+    sv_files = np.array(sv_files, dtype='S100')
+
+    # Add a channel to all_imgs
+    all_imgs = np.expand_dims(all_imgs, axis=1)
+
+    # Split into valid and train
+    ntrain = int(all_imgs.shape[0] * train_frac)
+    nvalid = all_imgs.shape[0] - ntrain
+
+    # Create a simple table of metadata
+    df = pandas.DataFrame()
+    df['filename'] = sv_files
+    if meta_idx:
+        df['idx0'] = idx0
+        df['idx1'] = idx1
+        df['idx2'] = idx2
+    df['row'] = row
+    df['col'] = col
+    df['ptype'] = [1]*ntrain + [0]*nvalid
+
+    # Write to disk as h5py
+    tbl_outf = outf.replace('.h5', '.parquet')
+    #tbl_outf = os.path.join(path, f'Pass_{ipass:03d}.parquet')
+
+    #embed(header='Check 51')
+
+
+    with h5py.File(outf, 'w') as f:
+        if ntrain > 0:
+            f.create_dataset('train', data=all_imgs[:ntrain])
+        f.create_dataset('valid', data=all_imgs[ntrain:])
+    print(f'Wrote {outf} with ntrain= {ntrain} and nvalid = {nvalid}')
+
+    # Write table
+    df.to_parquet(tbl_outf, index=False)
+    print(f'Wrote {tbl_outf} with {df.shape[0]} rows')
+
+
+
+def main(flg):
+    flg= int(flg)
+
+    # Pass 003 only
+    if flg == 3:
+        wrangle_one_pass(ipass=3, ntotal=20000, train_frac=0.8)#, debug=True)
+        # aws s3 cp Pass_003.h5 s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.h5 --profile nasa-oceanai
+        # aws s3 cp Pass_003.parquet s3://odsl/nasa_oceanai_workshop2025/justin/swot_L2unsmoothed_1dayRepeat_ssr_images_unh/Pass_003.parquet --profile nasa-oceanai
+
+    # Pass 006 only
+    if flg == 6:
+        wrangle_one_pass(ipass=6)
+
+    # Example files
+    if flg == 50:
+        ex_path = os.path.join(swot_path, 'ClassEx')
+        wrangle_one_pass(path=ex_path, meta_idx=False,
+                         outf=os.path.join(ex_path, 'Examples.h5'))
+
+    if flg == 60:
+        wrangle_one_pass(ipass=6, ntotal=1000, outf=os.path.join(swot_path,
+                         'Pass_006_test.h5'))
+
+# Command line execution
+if __name__ == '__main__':
+    import sys
+
+    if len(sys.argv) == 1:
+        flg = 0
+    else:
+        flg = sys.argv[1]
+
+    main(flg)

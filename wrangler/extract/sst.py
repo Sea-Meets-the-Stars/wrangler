@@ -9,6 +9,7 @@ from remote_sensing.netcdf import utils as rs_nc_utils
 
 from wrangler.datasets.base import AIOS_DataSet
 from wrangler.preproc import field as pp_field
+from wrangler import utils as wr_utils
 
 #from ulmo.viirs import io as viirs_io 
 #from ulmo.preproc import utils as pp_utils
@@ -28,6 +29,7 @@ def clear_grid(mask, field_size, method, CC_max=0.05,
     Parameters
     ----------
     mask : np.ndarray
+        1 = bad (cloudy), 0 = good (clear)
     field_size : int
     method : str
         'random'
@@ -134,19 +136,17 @@ def extract_file(filename:str,
                  nrepeat=1,
                  sub_grid_step=2,
                  lower_qual=False,
-                 inpaint=True, debug=False):
+                 inpaint=True, debug=False,
+                 grow_mask:float=0):
     """Method to extract a single file.
     Usually used in parallel
 
-    This is very similar to the MODIS routine
-
     Args:
-        filename (str): VIIRS datafile with path
+        filename (str): datafile with path
         aiost_ds (AIOS_DataSet): AIOS dataset
-            Required!
-        field_size (tuple, optional): [description]. Defaults to (128,128).
-        nadir_offset (int, optional): [description]. Defaults to 480.
-            Zero means none.
+        field_size (tuple, optional): Size of the cutout side (pixels)
+        nadir_offset (int, optional): Maximum offset from nadir for cutout center.
+            Zero means any nadir pixel is valid
         CC_max (float, optional): [description]. Defaults to 0.05.
         qual_thresh (int, optional): [description]. Defaults to 2.
         lower_qual (bool, optional): 
@@ -156,24 +156,33 @@ def extract_file(filename:str,
         sub_grid_step (int, optional):  Sets how finely to sample the image.
             Larger means more finely
         inpaint (bool, optional): [description]. Defaults to True.
+        grow_mask (int, optional): [description]. Defaults to 0.
         debug (bool, optional): [description]. Defaults to False.
 
     Returns:
         tuple: raw_SST, inpainted_mask, metadata, time
+            raw_SST: np.ndarray
+            inpainted_mask: np.ndarray
+            metadata: list
+            time: np.datetime64
     """
 
     # Load the image
     #embed(header='51 of extract_file')
     if aios_ds.field == 'SST':
-        dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=False)
+        try:
+            dfield, qual, latitude, longitude, time = rs_nc_sst.load(filename, verbose=False)
+        except OSError as e:
+            print(f"Error loading file {filename}: {e}")
+            return None, None, None, None
     else:
         raise ValueError("Only SST datasets supported so far")
 
     if dfield is None:
-        return
+        return None, None, None, None
 
-    # Generate the masks
-    masks = rs_nc_utils.build_mask(dfield, qual, 
+    # Generate the mask (True = bad)
+    mask = rs_nc_utils.build_mask(dfield, qual, 
                                 qual_thresh=qual_thresh,
                                 temp_bounds=temp_bounds, 
                                 lower_qual=lower_qual)
@@ -184,43 +193,63 @@ def extract_file(filename:str,
         lb = nadir_pix - nadir_offset
         ub = nadir_pix + nadir_offset
         dfield = dfield[:, lb:ub]
-        masks = masks[:, lb:ub].astype(np.uint8)
+        mask = mask[:, lb:ub].astype(np.uint8)
     else:
         lb = 0
 
     # Random clear rows, cols
     rows, cols, clear_fracs = clear_grid(
-        masks, field_size[0], 'center', 
+        mask, field_size[0], 'center', 
         CC_max=CC_max, nsgrid_draw=nrepeat,
         sub_grid_step=sub_grid_step)
     if rows is None:
-        return None
+        print(f"No clear fields for {filename}")
+        return None, None, None, None
+
+    # Grow the mask?
+    #   We do this after the clear fraction to preserve the 
+    #   results from previous work (Ulmo, Nenya, etc.)
+    if grow_mask > 0:
+        mask = wr_utils.grow_mask(mask, grow_mask)
 
     # Extract
-    fields, inpainted_masks = [], []
+    fields, inpainted_mask = [], []
     metadata = []
     for r, c, clear_frac in zip(rows, cols, clear_fracs):
         # Inpaint?
         field = dfield[r:r+field_size[0], c:c+field_size[1]]
-        mask = masks[r:r+field_size[0], c:c+field_size[1]]
+        imask = mask[r:r+field_size[0], c:c+field_size[1]].astype(bool)
+        #embed(header='Extracting fields from %s' % filename)
         if inpaint:
-            inpainted, _ = pp_field.main(field, mask, only_inpaint=True)
+            inpainted, _ = pp_field.main(field, imask, inpaint=True, only_inpaint=True)
         if inpainted is None:
             continue
+
         # Null out the non inpainted (to preseve memory when compressed)
-        inpainted[~mask] = np.nan
-        # Append SST raw + inpainted
+        inpainted[np.invert(imask)] = np.nan
+        #try:
+        #    inpainted[~imask] = np.nan
+        #except:
+        #    print('inpainted.shape:', inpainted.shape)
+        #    print('imask.shape:', imask.shape)
+        #    print('imask:', imask)
+        #    import pdb; pdb.set_trace()
+
         fields.append(field.astype(np.float32))
-        inpainted_masks.append(inpainted)
+
+        # Append SST raw + inpainted
+        inpainted_mask.append(inpainted)
         # meta
         row, col = r, c + lb
         lat = latitude[row + field_size[0] // 2, col + field_size[1] // 2]
         lon = longitude[row + field_size[0] // 2, col + field_size[1] // 2]
         metadata.append([filename, str(row), str(col), str(lat), str(lon), str(clear_frac)])
 
-    del dfield, masks
+    del dfield, mask
 
     if len(fields) == 0:
         print(f"No fields for: {filename}")
         return None, None, None, None
-    return np.stack(fields), np.stack(inpainted_masks), np.stack(metadata), time
+
+    # Return
+    return np.stack(fields), np.stack(inpainted_mask), np.stack(metadata), time

@@ -25,14 +25,13 @@ The main workflow combines downloading and processing using the grab_and_go modu
 
 .. code-block:: python
 
-    import asyncio
     from wrangler.grab_and_go import run
     
     # Define your extraction options file
     extract_file = 'extract_viirs_std.json'
     
     # Run the pipeline
-    asyncio.run(run(
+    run(
         dataset='VIIRS_NPP',          # Dataset name
         tstart='2024-01-01',          # Start date
         tend='2024-01-02',            # End date
@@ -40,7 +39,7 @@ The main workflow combines downloading and processing using the grab_and_go modu
         ex_file='output.h5',          # Output HDF5 file
         tbl_file='metadata.parquet',  # Output metadata file
         n_cores=4                     # Number of processing cores
-    ))
+    )
 
 Extraction Configuration
 ^^^^^^^^^^^^^^^^^^^^^
@@ -56,6 +55,7 @@ Create an extraction options JSON file (e.g., 'extract_viirs_std.json'):
         "temp_bounds": [-3, 34],
         "nrepeat": 1,
         "sub_grid_step": 4,
+        "grow_mask": false,
         "inpaint": true
     }
 
@@ -88,7 +88,6 @@ Use the cutout module to visualize processed fields:
 
 .. code-block:: python
 
-    import numpy as np
     from wrangler.cutout import show_image
     
     # Display a single field
@@ -104,14 +103,13 @@ If you need more control over the pipeline, you can separate the download and pr
 
 .. code-block:: python
 
-    import asyncio
     from wrangler.grab_and_go import grab, extract
     
     # First, download the files
-    local_files = await grab(viirs_npp, '2024-01-01', '2024-01-02')
+    local_files = grab(viirs_npp, '2024-01-01', '2024-01-02')
     
     # Then process them
-    fields, masks, metadata, times = await extract(
+    fields, masks, metadata, times = extract(
         viirs_npp,
         local_files,
         extract_options,
@@ -125,7 +123,7 @@ For custom preprocessing of fields:
 
 .. code-block:: python
 
-    from wrangler.field import main as process_field
+    from wrangler.preproc.field import main as process_field
     
     # Process a single field
     processed_field, meta = process_field(
@@ -172,23 +170,25 @@ Process multiple time periods:
 .. code-block:: python
 
     from datetime import datetime, timedelta
+    import pandas as pd
+    from wrangler.grab_and_go import run
     
-    start_date = datetime(2024, 1, 1)
-    end_date = datetime(2024, 1, 31)
+    start_date = pd.to_datetime('2024-01-01')
+    end_date = pd.to_datetime('2024-01-31')
     
     # Process one day at a time
     current_date = start_date
     while current_date <= end_date:
         next_date = current_date + timedelta(days=1)
-        asyncio.run(run(
+        run(
             dataset='VIIRS_NPP',
-            tstart=current_date.strftime('%Y-%m-%d'),
-            tend=next_date.strftime('%Y-%m-%d'),
+            tstart=current_date.isoformat(),
+            tend=next_date.isoformat(),
             eoption_file='extract_viirs_std.json',
             ex_file=f'output_{current_date.strftime("%Y%m%d")}.h5',
             tbl_file=f'metadata_{current_date.strftime("%Y%m%d")}.parquet',
             n_cores=4
-        ))
+        )
         current_date = next_date
 
 Tips and Best Practices
@@ -197,7 +197,7 @@ Tips and Best Practices
 1. Memory Management
    - Process data in smaller time chunks for large datasets
    - Use the `n_cores` parameter appropriately for your system
-   - Clean up downloaded files when no longer needed
+   - Clean up downloaded files by setting `save_local_files=False` (default)
 
 2. Quality Control
    - Always check the clear_fraction in the metadata

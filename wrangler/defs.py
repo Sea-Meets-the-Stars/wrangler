@@ -3,7 +3,59 @@
 import numpy as np
 import pandas
 
-# Wrangler options
+# Extraction data model
+ex_dmodel = {
+    'field_size': dict(dtype=(int, np.integer),
+                help='Size of the cutout side (pixels)'),
+    'clear_threshold': dict(dtype=(int, np.integer),
+                help='Threshold for clear fraction (percent)'),
+    'nadir_offset': dict(dtype=(int, np.integer),
+                help='Offset from nadir for cutout center'),
+    'temp_bounds': dict(dtype=(float,np.floating),
+                help='Temperature bounds for cutout'),
+    'grow_mask': dict(dtype=(float,np.floating),
+                help='Grow mask by this radius'),
+    'nrepeat': dict(dtype=(int, np.integer),
+                help='Number of times to repeat extraction'),
+    'sub_grid_step': dict(dtype=(int, np.integer),
+                help='Fraction of field-size to use for sub-gridding'),
+    'inpaint': dict(dtype=bool,
+                help='Inpaint the cutout'),
+}
+    
+# Pre-processing data model
+pp_dmodel = {
+    'inpaint': dict(dtype=bool,
+                help='Inpaint the cutout'),
+    'only_inpaint': dict(dtype=bool,
+                help='Only inpaint the cutout'),
+    'smooth_pix': dict(dtype=(int, np.integer),
+                help='Smooth the cutout with a Gaussian of this size (pixels)'),
+    'median': dict(dtype=bool,
+                help='Apply a median filter'),
+    'med_size': dict(dtype=(int, np.integer),
+                help='Size of the median filter window'),
+    'downscale': dict(dtype=bool,
+                help='Downscale the cutout'),
+    'dscale_size': dict(dtype=(int, np.integer),
+                help='Size to downscale the cutout to'),
+    'noise': dict(dtype=(float,np.floating),
+                help='Add white noise of this amplitude'),
+    'scale': dict(dtype=(float,np.floating),
+                help='Scale the cutout by this multiplicative factor'),
+    'expon': dict(dtype=(float,np.floating),
+                help='Exponentiate the cutout by this exponent'),
+    'gradient': dict(dtype=bool,
+                help='Apply a Sobel gradient filter'),
+    'de_mean': dict(dtype=bool,
+                help='Subtract the mean from the cutout'),
+    'min_mean': dict(dtype=(float,np.floating),
+                help='Require the mean of the cutout to exceed this value'),
+    'resize': dict(dtype=bool,
+                help='Resize the cutout to field_size x field_size'),
+}
+
+# Wrangler table data model
 tbl_dmodel = {
     'field_size': dict(dtype=(int, np.integer),
                 help='Size of the cutout side (pixels)'),
@@ -26,7 +78,9 @@ tbl_dmodel = {
     'clear_fraction': dict(dtype=float,
                 help='Fraction of the cutout clear from clouds'),
     'mu': dict(dtype=(float,np.floating),
-                help='Average SSHa of the cutout'),
+                help='Average of the cutout'),
+    'mean_temperature': dict(dtype=(float,np.floating),
+                help='Average SST of the cutout [historic]'),
     'Tmin': dict(dtype=(float,np.floating),
                 help='Minimum T of the cutout (C deg)'),
     'Tmax': dict(dtype=(float,np.floating),
@@ -45,11 +99,13 @@ tbl_dmodel = {
                 help='Filename of the pre-processed file holding the cutout'),
     'pp_idx': dict(dtype=(int,np.integer), 
                 help='Index describing position of the cutout in the pp_file'),
-    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0,1), 
-                    valid=0, train=1, init=-1,
-                    help='-1: illdefined, 0: valid, 1: train'),
+    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0, 1, 2), 
+                    valid=0, train=1, init=-1, test=2,
+                    help='-1: illdefined, 0: valid, 1: train, 2: test'),
                     # In Ulmo, we use 1 for the subset of training and 0 for the rest
                     # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
+    'UID': dict(dtype=np.int64,
+                help='Unique ID for the cutout. Usually an integer made from of lat, lon, datetime'),
     'images_file': dict(dtype=str,
                 help='Name of the images file, likely hdf5'),
     'data_folder': dict(dtype=str,

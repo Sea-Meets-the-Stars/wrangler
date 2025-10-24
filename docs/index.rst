@@ -1,50 +1,72 @@
-Wrangler
-========
+Wrangler Documentation
+=====================
 
-Wrangler is a Python package for processing and analyzing satellite data, with a focus on VIIRS Sea Surface Temperature (SST) data from PODAAC.
+Welcome to the Wrangler documentation. Wrangler is a Python library for downloading, processing, and analyzing satellite data.
 
 .. toctree::
    :maxdepth: 2
-   :caption: User Guide:
+   :caption: Getting Started
 
-   installation
    quickstart
-   datamodel
 
 .. toctree::
    :maxdepth: 2
-   :caption: API Reference:
+   :caption: Core Modules
 
+   grab_and_go
+   field_preprocessing
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   api/datamodel
    api/datasets
-   api/processing
-   api/io
-   api/utils
+   api/extraction
+   api/preprocessing
+   api/tables
+   api/visualization
 
-Quick Start
------------
+.. toctree::
+   :maxdepth: 1
+   :caption: Examples
 
-For detailed installation instructions, see :doc:`installation`.
-
-For a guide on getting started with wrangler, see :doc:`quickstart`.
+   examples/basic_extraction
+   examples/preprocessing_pipeline
+   examples/regional_analysis
 
 Features
 --------
 
-* Download and process VIIRS satellite data from PODAAC
-* Extract and preprocess Sea Surface Temperature (SST) fields
-* Support for multiple VIIRS satellites (NPP, N20, N21)
-* Robust data validation and quality control
-* Efficient parallel processing capabilities
-* Flexible I/O operations for various file formats
+* Downloading satellite data from various providers (PODAAC, etc.)
+* Extracting fields of interest from large granules
+* Processing and quality control of extracted fields
+* Managing metadata in tabular format
+* Visualization tools for satellite data
 
-Quick Links
-----------
+Installation
+-----------
 
-* `Source Code <https://github.com/AI-for-Ocean-Science/wrangler>`_
-* `Issue Tracker <https://github.com/AI-for-Ocean-Science/wrangler/issues>`_
+You can install Wrangler using pip:
 
-Indices and tables
-==================
+.. code-block:: bash
+
+    pip install wrangler
+
+Requirements
+-----------
+
+* Python 3.8+
+* numpy
+* pandas
+* h5py
+* scipy
+* scikit-image
+* boto3 (for S3 access)
+* tqdm
+
+Indices and Tables
+-----------------
 
 * :ref:`genindex`
 * :ref:`modindex`
