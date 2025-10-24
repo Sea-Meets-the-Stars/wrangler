@@ -63,7 +63,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
         coords_ds = wr_llc.load_coords()
     
     # Setup for parallel
-    if field in ['SST','SSS','SSTK', 'SSSs', 'SSH', 'U', 'V', 'SSHs']:
+    if field in ['SST','SSS','SSTK', 'SSSs', 'SSH', 'SSHa', 'U', 'V', 'SSHs']:
         map_fn = partial(pp_field.multi_process, pdict=pdict)
     elif field in ['DivSST2', 'DivSSS2']:
         map_fn = partial(gradfield2_cutout, **pdict)
@@ -90,7 +90,7 @@ def llc_datetime(llc_table:pandas.DataFrame, field:str, udate:str, pdict:str,
         data = ds.Theta.values
         if field == 'SSTK':
             data += 273.15 # Kelvin
-    elif field in ['SSH', 'SSHs']:
+    elif field in ['SSH', 'SSHs', 'SSHa']:
         data = ds.Eta.values
     elif field in ['SSS', 'SSSs', 'DivSSS2']:
         data = ds.Salt.values
