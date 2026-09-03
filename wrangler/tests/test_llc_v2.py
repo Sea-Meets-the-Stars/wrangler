@@ -136,3 +136,228 @@ def test_read_shrunk_field_missing_files(tmp_path):
     with pytest.raises(IOError):
         llc_v2.read_shrunk_field(str(tmp_path), str(tmp_path), 'Theta',
                                  123, FS, level=0)
+
+
+# ---------------------------------------------------------------------------
+# Discovery (folder naming + Dimitris' "start + n hours" dating rule)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+
+STRIDE = 144  # 25 s model timestep -> 144 iterations per hour (v1 value)
+
+
+def _make_out_tree(tmp_path, FS=FS, seed=0):
+    """Synthetic /nobackupp27/.../OUT: two adjacent folders of hourly Theta files.
+
+    Folder 1 covers 00h..03h (3 files, end-exclusive), folder 2 covers
+    03h..05h (2 files).  Also drops in distractor files (U, a 2D .data
+    field) and a non-output folder that discovery must ignore.
+
+    Returns:
+        (out_dir, mask_dir, {iteration: (mask_bits, values)})
+    """
+    rng = np.random.default_rng(seed)
+    n = 13 * FS * FS
+    mask_bits = rng.random(n) < 0.7
+    out_dir = tmp_path / 'OUT'
+    mask_dir = tmp_path / 'mask'
+    out_dir.mkdir()
+    mask_dir.mkdir()
+    with open(mask_dir / 'hFacC.bits', 'wb') as f:
+        f.write(np.packbits(mask_bits.astype(np.uint8), bitorder='little').tobytes())
+
+    truth = {}
+    folders = {
+        '2023_01_01_000000_to_2023_01_01_030000': [0, 1, 2],
+        '2023_01_01_030000_to_2023_01_01_050000': [3, 4],
+    }
+    for name, hours in folders.items():
+        d = out_dir / name
+        d.mkdir()
+        for h in hours:
+            it = 1000 + h * STRIDE
+            vals = rng.uniform(-2, 32, size=int(mask_bits.sum())).astype(np.float32)
+            with open(d / f'Theta.{it:010d}.shrunk', 'wb') as f:
+                f.write(vals.astype('>f4').tobytes())
+            (d / f'U.{it:010d}.shrunk').write_bytes(b'')       # other field
+            (d / f'Eta.{it:010d}.data').write_bytes(b'')       # 2D field, .data
+            truth[it] = (mask_bits, vals)
+    (out_dir / 'not_an_output_folder').mkdir()
+    (out_dir / 'README.txt').write_text('ignore me')
+    return str(out_dir), str(mask_dir), truth
+
+
+def test_parse_folder_name():
+    t0, t1 = llc_v2.parse_folder_name('2023_01_08_060000_to_2023_01_12_020000')
+    assert t0 == datetime(2023, 1, 8, 6, tzinfo=timezone.utc)
+    assert t1 == datetime(2023, 1, 12, 2, tzinfo=timezone.utc)
+    # Full paths are fine too.
+    t0b, _ = llc_v2.parse_folder_name('/nobackupp27/dbwhitt/llc_4320/OUT/'
+                                      '2023_01_08_060000_to_2023_01_12_020000/')
+    assert t0b == t0
+    with pytest.raises(ValueError):
+        llc_v2.parse_folder_name('matlab_v0')
+
+
+def test_store_name_for_date():
+    d = datetime(2023, 1, 1, 6, tzinfo=timezone.utc)
+    assert llc_v2.store_name_for_date(d) == '20230101T06.zarr'
+
+
+def test_discover_timesteps_dates_and_ordering(tmp_path):
+    out_dir, _, truth = _make_out_tree(tmp_path)
+    steps = llc_v2.discover_timesteps(out_dir, 'Theta')
+
+    assert len(steps) == 5
+    assert [s.iteration for s in steps] == sorted(truth)
+    expected = [datetime(2023, 1, 1, h, tzinfo=timezone.utc) for h in range(5)]
+    assert [s.date for s in steps] == expected
+    assert [s.n_in_folder for s in steps] == [0, 1, 2, 0, 1]
+    assert steps[3].folder.endswith('2023_01_01_030000_to_2023_01_01_050000')
+    assert all(os.path.isfile(s.path) for s in steps)
+    assert steps[0].store_name == '20230101T00.zarr'
+    assert steps[4].store_name == '20230101T04.zarr'
+
+    # Model timestep inferred from the within-folder iteration stride.
+    assert llc_v2.infer_timestep_seconds(steps) == pytest.approx(3600 / STRIDE)
+
+    # Other fields discover independently.
+    assert len(llc_v2.discover_timesteps(out_dir, 'U')) == 5
+    assert llc_v2.discover_timesteps(out_dir, 'Salt') == []
+
+
+def test_discover_timesteps_date_window(tmp_path):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    start = datetime(2023, 1, 1, 1)             # naive -> treated as UTC
+    end = datetime(2023, 1, 1, 4, tzinfo=timezone.utc)
+    steps = llc_v2.discover_timesteps(out_dir, 'Theta', start=start, end=end)
+    assert [s.date.hour for s in steps] == [1, 2, 3]
+
+
+def test_discover_timesteps_warns_on_gap(tmp_path, caplog):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    # Add a folder claiming 4 hours (00..04) but holding hours 0, 2, 3 only:
+    # non-constant iteration stride + span mismatch -> both warnings.
+    gap = os.path.join(out_dir, '2023_01_02_000000_to_2023_01_02_040000')
+    os.mkdir(gap)
+    for h in (0, 2, 3):
+        open(os.path.join(gap, f'Theta.{5000 + h * STRIDE:010d}.shrunk'), 'wb').close()
+    with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'Theta')
+    assert len(steps) == 8
+    assert 'stride is not constant' in caplog.text
+    assert 'spans 4.00 h but holds 3 files' in caplog.text
+    # The good folders alone still date correctly; the gap folder's dates
+    # after the hole are (knowingly) position-based.
+    gap_steps = [s for s in steps if s.folder == gap]
+    assert [s.date.hour for s in gap_steps] == [0, 1, 2]
+    assert llc_v2.infer_timestep_seconds(steps) is None
+
+
+def test_decompress_dry_value(tmp_path):
+    rng = np.random.default_rng(3)
+    n = 13 * FS * FS
+    mask_bits = rng.random(n) < 0.5
+    values = rng.uniform(0, 1, size=int(mask_bits.sum())).astype(np.float32)
+    _, shrunk_file = _write_level(tmp_path, 'lvl', mask_bits, values)
+    field = llc_v2.decompress_level(shrunk_file, mask_bits, dry_value=np.nan)
+    flat = field.reshape(-1)
+    assert np.all(np.isnan(flat[~mask_bits]))
+    np.testing.assert_allclose(flat[mask_bits], values, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Zarr output (needs zarr; skipped in envs without it, e.g. ocean14)
+# ---------------------------------------------------------------------------
+
+def test_extract_sst_end_to_end_local(tmp_path, caplog):
+    zarr = pytest.importorskip('zarr')
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+
+    # Dry run writes nothing.
+    stats = llc_v2.extract_sst(out_dir, mask_dir, str(dest), FS=FS, dry_run=True)
+    assert stats['discovered'] == 5 and stats['written'] == 0
+    assert not dest.exists()
+
+    stats = llc_v2.extract_sst(out_dir, mask_dir, str(dest), FS=FS)
+    assert stats == {'discovered': 5, 'written': 5, 'skipped': 0,
+                     'dt_seconds': pytest.approx(25.0)}
+
+    names = sorted(p.name for p in dest.iterdir())
+    assert names == ['20230101T00.zarr', '20230101T01.zarr', '20230101T02.zarr',
+                     '20230101T03.zarr', '20230101T04.zarr', 'grid.zarr']
+
+    # grid.zarr: wet mask from hFacC.bits
+    g = zarr.open_group(str(dest / 'grid.zarr'), mode='r', use_consolidated=False)
+    mask_bits = next(iter(truth.values()))[0]
+    np.testing.assert_array_equal(g['maskC'][:].reshape(-1), mask_bits)
+    assert g.attrs['complete'] is True
+
+    # One timestep store: dims/chunks/attrs/values, NaN over land.
+    steps = llc_v2.discover_timesteps(out_dir, 'Theta')
+    s = steps[3]
+    g = zarr.open_group(str(dest / s.store_name), mode='r', use_consolidated=False)
+    z = g['Theta']
+    assert z.shape == (13, FS, FS)
+    assert z.chunks == (1, FS, FS)            # (1, 720, 720) clipped to FS=8
+    assert tuple(z.metadata.dimension_names) == ('face', 'j', 'i')
+    assert g.attrs['selected_iteration'] == s.iteration
+    assert g.attrs['selected_date_utc'] == '2023-01-01 03:00:00'
+    assert g.attrs['source_folder'] == '2023_01_01_030000_to_2023_01_01_050000'
+    assert g.attrs['complete'] is True
+    assert z.attrs['units'] == 'degC'
+    flat = z[:].reshape(-1)
+    mask_bits, vals = truth[s.iteration]
+    np.testing.assert_allclose(flat[mask_bits], vals, rtol=1e-6)
+    assert np.all(np.isnan(flat[~mask_bits]))
+    np.testing.assert_array_equal(g['face'][:], np.arange(13))
+    np.testing.assert_array_equal(g['j'][:], np.arange(FS))
+
+    # Idempotent: a second run skips everything.
+    stats = llc_v2.extract_sst(out_dir, mask_dir, str(dest), FS=FS)
+    assert stats['written'] == 0 and stats['skipped'] == 5
+
+    # An incomplete store gets rewritten.
+    g = zarr.open_group(str(dest / s.store_name), mode='a', use_consolidated=False)
+    g.attrs['complete'] = False
+    stats = llc_v2.extract_sst(out_dir, mask_dir, str(dest), FS=FS)
+    assert stats['written'] == 1 and stats['skipped'] == 4
+
+    # --limit
+    stats = llc_v2.extract_sst(out_dir, mask_dir, str(tmp_path / 'dest2'), FS=FS,
+                               limit=2, write_grid=False)
+    assert stats['written'] == 2
+    assert sorted(p.name for p in (tmp_path / 'dest2').iterdir()) == \
+        ['20230101T00.zarr', '20230101T01.zarr']
+
+
+def test_s3_filesystem_settings(monkeypatch):
+    pytest.importorskip('s3fs')
+    monkeypatch.setenv('ENDPOINT_URL', 'https://example.invalid')
+    monkeypatch.setenv('AWS_PROFILE', 'nautilus-test')
+    fs = llc_v2.s3_filesystem(asynchronous=False)
+    assert fs.client_kwargs['endpoint_url'] == 'https://example.invalid'
+    assert fs.config_kwargs['s3']['addressing_style'] == 'path'
+    assert fs.kwargs['profile'] == 'nautilus-test'   # forwarded to AioSession(profile=)
+    # Explicit args win over the environment.
+    fs2 = llc_v2.s3_filesystem(endpoint='https://s3-west.nrp-nautilus.io/',
+                               profile='other', asynchronous=False)
+    assert fs2.client_kwargs['endpoint_url'] == 'https://s3-west.nrp-nautilus.io'
+    assert fs2.kwargs['profile'] == 'other'
+    assert llc_v2.is_s3('s3://llc4320-v2/SURFACE') and not llc_v2.is_s3('/tmp/x')
+
+
+def test_cli_parser_and_dry_run(tmp_path, capsys):
+    from wrangler.scripts import llc_v2_sst
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    args = llc_v2_sst.parser([out_dir, mask_dir, str(tmp_path / 'd'), '--FS', str(FS),
+                              '--dry-run', '--start', '2023-01-01T02', '--end', '2023-01-01'])
+    assert args.start == datetime(2023, 1, 1, 2, tzinfo=timezone.utc)
+    assert args.end == datetime(2023, 1, 1, tzinfo=timezone.utc)
+    args = llc_v2_sst.parser([out_dir, mask_dir, str(tmp_path / 'd'), '--FS', str(FS),
+                              '--dry-run', '--start', '2023-01-01T02'])
+    stats = llc_v2_sst.main(args)
+    assert stats['discovered'] == 3 and stats['written'] == 0
+    assert 'discovered=3' in capsys.readouterr().out
