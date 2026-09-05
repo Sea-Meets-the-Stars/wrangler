@@ -61,3 +61,7 @@ def main(args):
     print(f"discovered={stats['discovered']} written={stats['written']} "
           f"skipped={stats['skipped']} inferred_dt_s={stats['dt_seconds']}")
     return stats
+
+
+if __name__ == '__main__':
+    main(parser())

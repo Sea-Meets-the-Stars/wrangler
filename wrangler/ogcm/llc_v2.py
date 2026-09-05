@@ -283,6 +283,89 @@ def read_sst(data_dir: str, mask_dir: str, timestep, FS: int = 4320,
 
 
 # ---------------------------------------------------------------------------
+# Plain (uncompressed) MITgcm .data fields and the run's `data` namelist
+# ---------------------------------------------------------------------------
+
+def read_data_field(data_file: str, FS: int, level: int = 0,
+                    dtype: str = '>f4') -> np.ndarray:
+    """Read one level of a plain MITgcm binary ``.data`` file (2D fields).
+
+    The native 2D diagnostics (``Eta``, ``KPPhbl``, ``oceQnet``, ... --
+    see `FIELDS_2D`) are *not* shrunk: each ``<field>.<iteration>.data``
+    is the full ``13*FS*FS`` grid as big-endian float32 (MITgcm's default
+    ``real*4`` output, what ``read_llc_fkij`` reads in ``ExtractFields.m``),
+    with 0.0 over land.  Multi-level files are just levels concatenated.
+
+    Args:
+        data_file (str): path to ``<field>.<iteration>.data``.
+        FS (int): facet side length.
+        level (int, optional): 0-based level to read. Defaults to 0.
+        dtype (str, optional): on-disk dtype. Defaults to big-endian float32.
+
+    Returns:
+        np.ndarray: float32 array, shape (13, FS, FS).
+    """
+    npts = N_FACETS * FS * FS
+    itemsize = np.dtype(dtype).itemsize
+    nbytes_level = npts * itemsize
+    fsize = os.path.getsize(data_file)
+    if fsize % nbytes_level != 0:
+        raise ValueError(
+            f"{data_file}: size {fsize} is not a multiple of one level "
+            f"({nbytes_level} bytes for FS={FS}); wrong FS or dtype?")
+    nlev = fsize // nbytes_level
+    if not (0 <= level < nlev):
+        raise ValueError(f"level={level} out of range for {nlev} level(s) in {data_file}")
+    with open(data_file, 'rb') as f:
+        f.seek(level * nbytes_level)
+        raw = f.read(nbytes_level)
+    return np.frombuffer(raw, dtype=dtype).astype(np.float32).reshape(N_FACETS, FS, FS)
+
+
+NAMELIST_KEYS = ('deltaT', 'nIter0', 'startTime', 'nTimeSteps', 'endTime',
+                 'dumpFreq', 'taveFreq')
+
+
+def read_data_namelist(folder: str, keys=NAMELIST_KEYS) -> dict:
+    """Pull a few numeric parameters out of a folder's MITgcm ``data`` namelist.
+
+    Each raw-output folder on Pleiades holds the namelists of the run
+    segment that produced it (``data``, ``data.cal``, ``data.diagnostics``,
+    ...).  ``deltaT`` (model timestep, s) and ``nIter0`` (first iteration
+    of the segment) let us date a file from its iteration number
+    independently of the position rule `discover_timesteps` uses, so the
+    two can be cross-checked.  Tolerant, regex-based parsing (Fortran
+    namelist: ``key=value,`` pairs, several per line allowed, ``#`` comment
+    lines); anything unparseable is simply absent from the result.
+
+    Args:
+        folder (str): raw-output folder (must contain a file named ``data``).
+        keys (tuple, optional): parameter names to look for (case-insensitive).
+
+    Returns:
+        dict: ``{key: float}`` for every key found; ``{}`` if there is no
+            ``data`` file.
+    """
+    path = os.path.join(folder, 'data')
+    if not os.path.isfile(path):
+        return {}
+    with open(path, errors='replace') as f:
+        lines = [ln for ln in f if not ln.lstrip().startswith('#')]
+    text = '\n'.join(lines)
+    out = {}
+    for key in keys:
+        m = re.search(rf'(?i)(?<![A-Za-z0-9_]){key}\s*=\s*([-+0-9.eEdD]+)', text)
+        if m is None:
+            continue
+        val = m.group(1).replace('D', 'E').replace('d', 'e').rstrip('.')
+        try:
+            out[key] = float(val)
+        except ValueError:
+            pass
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Discovery: raw-output folders -> (iteration, date) records
 # ---------------------------------------------------------------------------
 #
@@ -401,6 +484,39 @@ def _check_folder_consistency(folder: str, start, end, iterations):
     return stride
 
 
+def _check_against_namelist(folder: str, iterations, stride):
+    """Compare the position-based dating with iteration*deltaT from ``data``.
+
+    If the folder's ``data`` namelist gives ``deltaT`` (and ``nIter0``),
+    the first file *should* sit at ``(iter0 - nIter0) * deltaT`` = 0 h
+    after the folder start and consecutive files 1 h apart for the
+    "start + n hours" rule to be exact.  Logs the implied numbers and
+    warns on disagreement; never changes the dates.
+
+    Returns:
+        dict: the parsed namelist values (possibly empty).
+    """
+    nml = read_data_namelist(folder)
+    if 'deltaT' not in nml or not iterations:
+        return nml
+    dt = nml['deltaT']
+    n_iter0 = nml.get('nIter0', 0.0)
+    first_h = (iterations[0] - n_iter0) * dt / 3600.0
+    stride_h = stride * dt / 3600.0 if stride else None
+    logger.info("%s: namelist deltaT=%g s, nIter0=%g -> first file at +%.3f h "
+                "from segment start, file spacing %s h",
+                folder, dt, n_iter0, first_h,
+                f"{stride_h:.3f}" if stride_h is not None else "n/a")
+    hour = OUTPUT_CADENCE.total_seconds() / 3600.0
+    if abs(first_h) > 1e-6 or (stride_h is not None and abs(stride_h - hour) > 1e-6):
+        logger.warning(
+            "%s: iteration*deltaT dating disagrees with the 'start + n hours' "
+            "rule (first file +%.3f h, spacing %s h). Dates assigned here follow "
+            "the position rule; confirm which is right before trusting them.",
+            folder, first_h, f"{stride_h:.3f}" if stride_h is not None else "n/a")
+    return nml
+
+
 def discover_timesteps(out_dir: str, field: str = 'Theta',
                        start: datetime = None, end: datetime = None):
     """Find every available ``<field>.*.shrunk`` file under *out_dir* and date it.
@@ -448,7 +564,8 @@ def discover_timesteps(out_dir: str, field: str = 'Theta',
         files.sort()  # by iteration number
 
         iterations = [it for it, _ in files]
-        _check_folder_consistency(folder, t0, t1, iterations)
+        stride = _check_folder_consistency(folder, t0, t1, iterations)
+        _check_against_namelist(folder, iterations, stride)
 
         for n, (iteration, fn) in enumerate(files):
             date = t0 + n * OUTPUT_CADENCE

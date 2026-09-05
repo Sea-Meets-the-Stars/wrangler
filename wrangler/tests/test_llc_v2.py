@@ -361,3 +361,114 @@ def test_cli_parser_and_dry_run(tmp_path, capsys):
     stats = llc_v2_sst.main(args)
     assert stats['discovered'] == 3 and stats['written'] == 0
     assert 'discovered=3' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Plain .data fields, `data` namelist, and the inspection CLI
+# ---------------------------------------------------------------------------
+
+NAMELIST = """# Model parameters
+# Continuous equation parameters
+ &PARM01
+ tRef= 51*20.,
+ viscAr=5.6614e-04,
+ &
+# Time stepping parameters
+ &PARM03
+ nIter0=0,
+ nTimeSteps=125280,
+ deltaT=5.,
+ pChkptFreq=626400.,
+ dumpFreq=3600.,
+ &
+"""
+
+
+def _write_eta(path, FS, wet, rng):
+    eta = np.zeros(13 * FS * FS, dtype=np.float32)
+    eta[wet] = rng.normal(0, 0.5, size=int(wet.sum())).astype(np.float32)
+    eta[wet & (eta == 0)] = 0.1
+    with open(path, 'wb') as f:
+        f.write(eta.astype('>f4').tobytes())
+    return eta.reshape(13, FS, FS)
+
+
+def test_read_data_field(tmp_path):
+    rng = np.random.default_rng(11)
+    wet = rng.random(13 * FS * FS) < 0.6
+    path = tmp_path / 'Eta.0000000720.data'
+    eta = _write_eta(path, FS, wet, rng)
+    back = llc_v2.read_data_field(str(path), FS)
+    assert back.shape == (13, FS, FS) and back.dtype == np.float32
+    np.testing.assert_array_equal(back, eta)
+    with pytest.raises(ValueError):
+        llc_v2.read_data_field(str(path), FS + 8)      # wrong FS
+    with pytest.raises(ValueError):
+        llc_v2.read_data_field(str(path), FS, level=1)  # only one level
+
+
+def test_read_data_namelist(tmp_path):
+    assert llc_v2.read_data_namelist(str(tmp_path)) == {}   # no `data` file
+    (tmp_path / 'data').write_text(NAMELIST)
+    nml = llc_v2.read_data_namelist(str(tmp_path))
+    assert nml['deltaT'] == 5.0
+    assert nml['nIter0'] == 0.0
+    assert nml['nTimeSteps'] == 125280.0
+    assert nml['dumpFreq'] == 3600.0
+    assert 'startTime' not in nml
+    # Several assignments per line, D exponents, case-insensitive keys.
+    (tmp_path / 'data').write_text(" &PARM03\n NITER0=1440, deltat=2.5D1, startTime=0.,\n &\n")
+    nml = llc_v2.read_data_namelist(str(tmp_path))
+    assert nml == {'deltaT': 25.0, 'nIter0': 1440.0, 'startTime': 0.0}
+
+
+def test_discover_warns_when_namelist_disagrees(tmp_path, caplog):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    folder = os.path.join(out_dir, '2023_01_01_000000_to_2023_01_01_030000')
+    # Files sit at iterations 1000, 1144, 1288. With deltaT=25 s and nIter0=0
+    # the first is at +6.94 h, not +0 h -> disagreement warning.
+    with open(os.path.join(folder, 'data'), 'w') as f:
+        f.write(" &PARM03\n nIter0=0,\n deltaT=25.,\n &\n")
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'Theta')
+    assert len(steps) == 5                       # dates unchanged
+    assert 'namelist deltaT=25 s' in caplog.text
+    assert 'disagrees' in caplog.text
+    # Consistent namelist (nIter0 = first iteration, hourly stride) -> no warning.
+    caplog.clear()
+    with open(os.path.join(folder, 'data'), 'w') as f:
+        f.write(f" &PARM03\n nIter0=1000,\n deltaT={3600 / STRIDE},\n &\n")
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        llc_v2.discover_timesteps(out_dir, 'Theta')
+    assert 'disagrees' not in caplog.text
+    assert 'first file at +0.000 h' in caplog.text
+
+
+def test_inspect_cli(tmp_path, capsys):
+    pytest.importorskip('zarr')
+    from wrangler.scripts import llc_v2_inspect
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_sst(out_dir, mask_dir, str(dest), FS=FS, limit=1, write_grid=False)
+    store = str(dest / '20230101T00.zarr')
+    mask_bits, vals = truth[1000]
+
+    # Matching Eta: same wet pattern -> mask check OK.
+    rng = np.random.default_rng(5)
+    eta_ok = tmp_path / 'Eta.0000001000.data'
+    _write_eta(eta_ok, FS, mask_bits, rng)
+    res = llc_v2_inspect.main(llc_v2_inspect.parser(
+        [store, '--eta', str(eta_ok), '--FS', str(FS)]))
+    out = capsys.readouterr().out
+    assert res['n_wet'] == int(mask_bits.sum()) and res['n_bad'] == 0
+    assert res['eta_wet_but_field_nan'] == 0.0 and res['field_wet_but_eta_zero'] == 0.0
+    assert 'value check: OK' in out and 'mask check: OK' in out
+    assert 'selected_iteration: 1000' in out
+
+    # Eta with a shuffled wet pattern -> MISMATCH.
+    eta_bad = tmp_path / 'Eta.bad.data'
+    _write_eta(eta_bad, FS, rng.permutation(mask_bits), rng)
+    res = llc_v2_inspect.main(llc_v2_inspect.parser(
+        [store, '--eta', str(eta_bad), '--FS', str(FS)]))
+    assert res['eta_wet_but_field_nan'] > 0.1
+    assert 'MISMATCH' in capsys.readouterr().out
