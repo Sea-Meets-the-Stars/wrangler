@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Inventory the LLC4320 v2 raw-output tree: fields and file types per folder
+"""
+
+from wrangler.scripts import llc_v2_inventory
+
+if __name__ == '__main__':
+    args = llc_v2_inventory.parser()
+    llc_v2_inventory.main(args)

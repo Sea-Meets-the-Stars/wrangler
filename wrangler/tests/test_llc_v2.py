@@ -472,3 +472,75 @@ def test_inspect_cli(tmp_path, capsys):
         [store, '--eta', str(eta_bad), '--FS', str(FS)]))
     assert res['eta_wet_but_field_nan'] > 0.1
     assert 'MISMATCH' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Inventory (step 2 on Pleiades found no Theta.*.shrunk files)
+# ---------------------------------------------------------------------------
+
+def _touch(path):
+    open(path, 'wb').close()
+
+
+def test_inventory_and_summary(tmp_path, capsys):
+    out_dir = tmp_path / 'OUT'
+    out_dir.mkdir()
+    # Folder A: namelists + 2D .data only (what step 2 saw).
+    a = out_dir / '2023_01_01_000000_to_2023_01_08_060000'
+    a.mkdir()
+    for fn in ('data', 'data.cal', 'data.exch2_36x36x113847', 'data.kpp'):
+        _touch(a / fn)
+    for h in range(1, 4):
+        _touch(a / f'Eta.{720 * h:010d}.data')
+        _touch(a / f'Eta.{720 * h:010d}.meta')
+        _touch(a / f'oceQnet.{720 * h:010d}.data')
+    (a / 'pickups').mkdir()
+    # Folder B: also has shrunk 3D fields.
+    b = out_dir / '2023_03_27_000000_to_2023_03_30_000000'
+    b.mkdir()
+    for h in range(1, 3):
+        _touch(b / f'Eta.{720 * h:010d}.data')
+        for fld in ('U', 'V', 'Theta', 'Salt'):
+            _touch(b / f'{fld}.{720 * h:010d}.shrunk')
+    (out_dir / 'matlab_v0').mkdir()               # ignored: not an output folder
+    _touch(out_dir / 'Theta.0000000720.shrunk')   # ignored: not inside a folder
+
+    invs = llc_v2.inventory(str(out_dir))
+    assert [os.path.basename(i.folder) for i in invs] == [a.name, b.name]
+    ia, ib = invs
+    assert ia.n_files == 4 + 9 + 1
+    assert ia.fields[('Eta', 'data')] == (3, 720, 2160)
+    assert ia.fields[('Eta', 'meta')] == (3, 720, 2160)
+    assert ia.fields_with_ext('shrunk') == []
+    assert ia.fields_with_ext('data') == ['Eta', 'oceQnet']
+    assert 'pickups/' in ia.other and 'data.cal' in ia.other
+    assert ib.fields_with_ext('shrunk') == ['Salt', 'Theta', 'U', 'V']
+    assert ib.has('Theta') and not ia.has('Theta')
+
+    summ = llc_v2.summarize_inventory(invs, 'Theta')
+    assert summ['n_folders'] == 2 and summ['with_field'] == 1
+    assert summ['first_with'] == datetime(2023, 3, 27, tzinfo=timezone.utc)
+    assert summ['last_with'] == datetime(2023, 3, 30, tzinfo=timezone.utc)
+    assert summ['without_field'] == [a.name]
+    assert summ['combos'][('Eta', 'data')] == 2
+    assert summ['combos'][('Theta', 'shrunk')] == 1
+
+    assert llc_v2.inventory(str(out_dir), max_folders=1)[0].folder == str(a)
+
+    # Bounded find: depth 1 sees only the stray file, depth 2 also folder B's.
+    hits, total = llc_v2.find_files(str(out_dir), '.shrunk', max_depth=1)
+    assert total == 1 and hits[0].endswith('Theta.0000000720.shrunk')
+    hits, total = llc_v2.find_files(str(out_dir), '.shrunk', max_depth=2, limit=3)
+    assert total == 9 and len(hits) == 3
+
+    # CLI
+    from wrangler.scripts import llc_v2_inventory
+    summ2 = llc_v2_inventory.main(llc_v2_inventory.parser(
+        [str(out_dir), '--find', str(out_dir), '--depth', '2']))
+    out = capsys.readouterr().out
+    assert summ2 == summ
+    assert 'shrunk:[-]  data:[Eta,oceQnet]' in out
+    assert 'shrunk:[Salt,Theta,U,V]' in out
+    assert 'with Theta.*.shrunk: 1   (2023-03-27 00:00 to 2023-03-30 00:00)' in out
+    assert f'folders lacking it: {a.name}' in out
+    assert '*.shrunk files under' in out and ': 9' in out

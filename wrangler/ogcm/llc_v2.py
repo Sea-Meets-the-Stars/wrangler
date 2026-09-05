@@ -615,6 +615,144 @@ def infer_timestep_seconds(steps):
 
 
 # ---------------------------------------------------------------------------
+# Inventory: what fields / file types does each raw-output folder hold?
+# ---------------------------------------------------------------------------
+#
+# Written after step 2 of the Pleiades checklist found *no* Theta.*.shrunk
+# files in 2023_01_01_000000_to_2023_01_08_060000.  Rather than guess at
+# names, summarise every folder compactly: for each (field, extension)
+# present, the file count and iteration range.
+
+OUTPUT_FILE_RE = re.compile(
+    r'^(?P<field>[A-Za-z0-9_]+)\.(?P<iteration>\d{6,12})\.(?P<ext>[A-Za-z0-9_.]+)$')
+
+
+@dataclass
+class FolderInventory:
+    """Summary of one raw-output folder.
+
+    Attributes:
+        folder (str): full path.
+        start, end (datetime): from the folder name.
+        n_files (int): number of entries in the folder.
+        fields (dict): ``{(field, ext): (count, min_iteration, max_iteration)}``
+            for every ``<field>.<iteration>.<ext>`` file present.
+        other (list): up to 20 filenames not matching that pattern
+            (namelists, logs, subdirectories, ...).
+    """
+    folder: str
+    start: datetime
+    end: datetime
+    n_files: int
+    fields: dict
+    other: list
+
+    def fields_with_ext(self, ext: str):
+        """Sorted field names present with extension *ext* (e.g. 'shrunk')."""
+        return sorted(f for (f, e) in self.fields if e == ext)
+
+    def has(self, field: str, ext: str = 'shrunk') -> bool:
+        return (field, ext) in self.fields
+
+
+def inventory_folder(folder: str) -> FolderInventory:
+    """Summarise the files in one raw-output folder (see `FolderInventory`)."""
+    start, end = parse_folder_name(folder)
+    names = sorted(os.listdir(folder))
+    fields, other = {}, []
+    for fn in names:
+        m = OUTPUT_FILE_RE.match(fn)
+        if m is None:
+            if len(other) < 20:
+                other.append(fn + ('/' if os.path.isdir(os.path.join(folder, fn)) else ''))
+            continue
+        key = (m['field'], m['ext'])
+        it = int(m['iteration'])
+        cnt, lo, hi = fields.get(key, (0, it, it))
+        fields[key] = (cnt + 1, min(lo, it), max(hi, it))
+    return FolderInventory(folder=folder, start=start, end=end, n_files=len(names),
+                           fields=fields, other=other)
+
+
+def inventory(out_dir: str, max_folders: int = None):
+    """Inventory every ``YYYY_MM_DD_HHMMSS_to_...`` folder under *out_dir*.
+
+    Args:
+        out_dir (str): raw-output parent.
+        max_folders (int, optional): stop after this many folders.
+
+    Returns:
+        list[FolderInventory]: in name (= chronological) order.
+    """
+    if not os.path.isdir(out_dir):
+        raise IOError(f"Not a directory: {out_dir}")
+    out = []
+    for entry in sorted(os.listdir(out_dir)):
+        folder = os.path.join(out_dir, entry)
+        if not os.path.isdir(folder) or FOLDER_RE.match(entry) is None:
+            continue
+        out.append(inventory_folder(folder))
+        if max_folders is not None and len(out) >= max_folders:
+            break
+    return out
+
+
+def summarize_inventory(invs, field: str = 'Theta', ext: str = 'shrunk') -> dict:
+    """Roll an `inventory` up into the few facts we need.
+
+    Returns:
+        dict: ``n_folders``; ``combos`` -- ``{(field, ext): n_folders_present}``
+            over all folders; ``with_field`` -- folders holding
+            ``<field>.*.<ext>``; ``first_with``/``last_with`` -- their date
+            range (or None); ``without_field`` -- folder basenames lacking it.
+    """
+    combos = {}
+    with_field, without = [], []
+    for inv in invs:
+        for key in inv.fields:
+            combos[key] = combos.get(key, 0) + 1
+        (with_field if inv.has(field, ext) else without).append(inv)
+    return {
+        'n_folders': len(invs),
+        'combos': dict(sorted(combos.items())),
+        'with_field': len(with_field),
+        'first_with': with_field[0].start if with_field else None,
+        'last_with': with_field[-1].end if with_field else None,
+        'without_field': [os.path.basename(i.folder) for i in without],
+    }
+
+
+def find_files(root: str, suffix: str = '.shrunk', max_depth: int = 3,
+               limit: int = 20):
+    """Locate files ending in *suffix* under *root*, at most *max_depth* levels down.
+
+    A bounded ``find root -maxdepth N -name "*suffix"`` for "where did the
+    compressed 3D output go?": files directly in *root* are at depth 1,
+    files in its immediate subdirectories at depth 2, and so on.
+    Unreadable directories are skipped silently.
+
+    Returns:
+        tuple: (list of up to *limit* matching paths, total number of matches).
+    """
+    root = os.path.normpath(root)
+    base_depth = root.count(os.sep)
+    hits, total = [], 0
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
+        file_depth = dirpath.count(os.sep) - base_depth + 1
+        if file_depth > max_depth:
+            dirnames[:] = []
+            continue
+        if file_depth >= max_depth:
+            dirnames[:] = []
+        for fn in filenames:
+            if fn.endswith(suffix):
+                total += 1
+                if len(hits) < limit:
+                    hits.append(os.path.join(dirpath, fn))
+    return hits, total
+
+
+# ---------------------------------------------------------------------------
 # Zarr output on Nautilus S3 (or a local directory)
 # ---------------------------------------------------------------------------
 #
