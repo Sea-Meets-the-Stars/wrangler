@@ -1,4 +1,20 @@
-""" Python reader for compressed ("shrunk") LLC4320 v2 raw output.
+""" Readers and extraction pipeline for LLC4320 v2 raw output on NASA Pleiades.
+
+Two kinds of raw files matter (facts from Dan Whitt, 2026-09-09; see
+``claude_prompts/llc4320_v2.md``):
+
+* **Uncompressed surface / 2D fields** -- ``SST/SSS/SSU/SSV.<iter>.data``
+  (surface Theta/Salt/U/V) and the native 2D diagnostics (``Eta``, ...) are
+  plain MITgcm "compact" binaries, 4320 x 56160 big-endian real*4, i.e. the
+  native ``(13, 4320, 4320)`` facet layout.  `read_data_field` reads them and
+  `extract_surface` turns them into dbof-style Zarr stores.  This is the
+  path used for the surface-field product.
+* **Compressed 3D fields** -- ``<field>.<iter>.shrunk`` + ``hFac*.bits``
+  masks, decoded by the pure-Python port below (kept for the later
+  full-depth phase).
+
+Compressed ("shrunk") format
+============================
 
 This is a pure-Python/NumPy port of the bit-mask decompression scheme
 implemented in the MATLAB/MEX toolbox Dimitris shared
@@ -326,13 +342,28 @@ NAMELIST_KEYS = ('deltaT', 'nIter0', 'startTime', 'nTimeSteps', 'endTime',
                  'dumpFreq', 'taveFreq')
 
 
+def _parse_params(text: str, keys) -> dict:
+    """Regex-parse ``key=value`` numeric assignments out of *text* (see `read_data_namelist`)."""
+    out = {}
+    for key in keys:
+        m = re.search(rf'(?i)(?<![A-Za-z0-9_]){key}\s*=\s*([-+0-9.eEdD]+)', text)
+        if m is None:
+            continue
+        val = m.group(1).replace('D', 'E').replace('d', 'e').rstrip('.')
+        try:
+            out[key] = float(val)
+        except ValueError:
+            pass
+    return out
+
+
 def read_data_namelist(folder: str, keys=NAMELIST_KEYS) -> dict:
     """Pull a few numeric parameters out of a folder's MITgcm ``data`` namelist.
 
     Each raw-output folder on Pleiades holds the namelists of the run
     segment that produced it (``data``, ``data.cal``, ``data.diagnostics``,
     ...).  ``deltaT`` (model timestep, s) and ``nIter0`` (first iteration
-    of the segment) let us date a file from its iteration number
+    of the segment) let a file be dated from its iteration number
     independently of the position rule `discover_timesteps` uses, so the
     two can be cross-checked.  Tolerant, regex-based parsing (Fortran
     namelist: ``key=value,`` pairs, several per line allowed, ``#`` comment
@@ -351,17 +382,49 @@ def read_data_namelist(folder: str, keys=NAMELIST_KEYS) -> dict:
         return {}
     with open(path, errors='replace') as f:
         lines = [ln for ln in f if not ln.lstrip().startswith('#')]
-    text = '\n'.join(lines)
-    out = {}
-    for key in keys:
-        m = re.search(rf'(?i)(?<![A-Za-z0-9_]){key}\s*=\s*([-+0-9.eEdD]+)', text)
-        if m is None:
-            continue
-        val = m.group(1).replace('D', 'E').replace('d', 'e').rstrip('.')
-        try:
-            out[key] = float(val)
-        except ValueError:
-            pass
+    return _parse_params('\n'.join(lines), keys)
+
+
+def read_stdout_params(folder: str, keys=NAMELIST_KEYS, max_bytes: int = 4_000_000) -> dict:
+    """Parse the same parameters from the folder's ``STDOUT.0000`` (or first ``STDOUT.*``).
+
+    Dan Whitt: "deltaT ranges from 5 to 20 seconds depending on the
+    folder/run ... you can find it in STDOUT.0* in each folder", and
+    ``nIter0`` varies too.  MITgcm echoes its namelists near the top of
+    STDOUT (``(PID.TID 0000.0001) > deltaT=5.,``) and again as
+    ``deltaT = 5.000000000000000E+00 /* ... */``; both forms parse.  Only
+    the first *max_bytes* are read -- the echo is at the top and STDOUT can
+    be huge.
+
+    Returns:
+        dict: ``{key: float}``; ``{}`` if no STDOUT file exists.
+    """
+    cands = sorted(fn for fn in os.listdir(folder) if fn.startswith('STDOUT.'))
+    if not cands:
+        return {}
+    path = os.path.join(folder, 'STDOUT.0000' if 'STDOUT.0000' in cands else cands[0])
+    with open(path, errors='replace') as f:
+        text = f.read(max_bytes)
+    return _parse_params(text, keys)
+
+
+def read_run_params(folder: str, keys=NAMELIST_KEYS) -> dict:
+    """``deltaT``/``nIter0``/... for a folder: from ``data``, filled in from ``STDOUT``.
+
+    Returns:
+        dict: merged parameters (``data`` wins where both have a key), plus
+            ``'source'``: 'data', 'STDOUT', 'data+STDOUT' or None.
+    """
+    nml = read_data_namelist(folder, keys)
+    missing = [k for k in keys if k not in nml]
+    out = dict(nml)
+    src = 'data' if nml else None
+    if missing:
+        so = read_stdout_params(folder, missing)
+        if so:
+            out.update(so)
+            src = 'data+STDOUT' if nml else 'STDOUT'
+    out['source'] = src
     return out
 
 
@@ -372,18 +435,22 @@ def read_data_namelist(folder: str, keys=NAMELIST_KEYS) -> dict:
 # Raw output on Pleiades lives under one parent (e.g.
 # /nobackupp27/dbwhitt/llc_4320/OUT) in folders named by the time range they
 # cover, e.g. ``2023_01_01_000000_to_2023_01_08_060000``, each holding one
-# ``<field>.<10-digit iteration>.shrunk`` file per output step.  The .shrunk
-# filenames carry the MITgcm iteration number, not a date.  The date rule is
-# the one Dimitris uses in ``ExtractFields.m`` / ``dimitris_notes_v2.txt``:
+# ``<field>.<10-digit iteration>.<ext>`` file per output hour.  The
+# filenames carry the MITgcm iteration number, not a date, and deltaT
+# (5-20 s) and nIter0 differ from folder to folder, so iteration numbers
+# alone cannot date a file.  The rule, per Dan Whitt (run owner, 2026-09-09):
 #
-#     date(file) = folder start time + n hours,
+#     hourly snapshots; the first file of a folder is ONE HOUR AFTER the
+#     folder's start time; the last file is AT the folder's end time; no
+#     hour appears in two folders.  =>  date(n) = start + (n + 1) hours,
+#     n = 0-based position in the sorted listing, and nfiles == span hours.
 #
-# where n is the file's 0-based position in the *sorted* listing of its
-# folder (output is hourly).  ``discover_timesteps`` implements exactly
-# that, and additionally cross-checks it against the iteration numbers
-# (constant stride within a folder <=> constant cadence) and against the
-# folder's end time, logging warnings on any inconsistency rather than
-# silently mis-dating files.
+# (This is one hour later than the ``start + n hours`` loop in
+# ``ExtractFields.m``, which is what earlier versions of this module used.)
+# ``discover_timesteps`` implements that rule, checks the file count against
+# the folder span, and cross-checks against iteration*deltaT using the
+# folder's ``data``/``STDOUT`` parameters, logging warnings on any
+# inconsistency rather than silently mis-dating files.
 
 FOLDER_RE = re.compile(
     r'^(?P<y0>\d{4})_(?P<m0>\d{2})_(?P<d0>\d{2})_(?P<t0>\d{6})'
@@ -434,7 +501,7 @@ class Timestep:
         path (str): full path of the ``.shrunk`` file.
         iteration (int): MITgcm iteration number from the filename.
         n_in_folder (int): 0-based position within the folder's sorted listing.
-        date (datetime): assigned UTC date (folder start + n_in_folder hours).
+        date (datetime): assigned UTC date: folder start + (n_in_folder + 1) hours.
     """
     field: str
     folder: str
@@ -452,14 +519,15 @@ class Timestep:
 def _check_folder_consistency(folder: str, start, end, iterations):
     """Warn if a folder's files don't look like an unbroken hourly sequence.
 
-    Two independent checks on Dimitris' "start + n hours" dating rule:
+    Two independent checks on the ``start + (n+1) hours`` dating rule:
 
     1. Iteration stride: with a fixed model timestep and hourly output,
        consecutive iteration numbers differ by a constant.  A varying
        stride means a missing/extra file, and the position-based dates
        after the gap would be wrong.
-    2. Folder span: the ``_to_`` end time should equal start + nfiles
-       hours (end-exclusive) or start + (nfiles-1) hours (end-inclusive).
+    2. Folder span: the last file is *at* the folder's end time and the
+       first is one hour after its start, so nfiles must equal the span in
+       hours exactly.
 
     Returns:
         int or None: the constant iteration stride, if there is one.
@@ -476,60 +544,72 @@ def _check_folder_consistency(folder: str, start, end, iterations):
                 "extra file? Position-based dates may be wrong here.",
                 folder, sorted(set(int(d) for d in diffs)))
     span_hours = (end - start) / OUTPUT_CADENCE
-    if span_hours not in (nfiles, nfiles - 1):
+    if span_hours != nfiles:
         logger.warning(
-            "%s: folder spans %.2f h but holds %d files -- expected %d "
-            "(end-exclusive) or %d (end-inclusive) for hourly output.",
-            folder, span_hours, nfiles, nfiles, nfiles - 1)
+            "%s: folder spans %.2f h but holds %d files -- expected exactly %d "
+            "for hourly output whose last file is at the folder end time. "
+            "Dates in this folder may be wrong.",
+            folder, span_hours, nfiles, int(round(span_hours)))
     return stride
 
 
 def _check_against_namelist(folder: str, iterations, stride):
-    """Compare the position-based dating with iteration*deltaT from ``data``.
+    """Compare the position-based dating with iteration*deltaT from ``data``/``STDOUT``.
 
-    If the folder's ``data`` namelist gives ``deltaT`` (and ``nIter0``),
-    the first file *should* sit at ``(iter0 - nIter0) * deltaT`` = 0 h
-    after the folder start and consecutive files 1 h apart for the
-    "start + n hours" rule to be exact.  Logs the implied numbers and
-    warns on disagreement; never changes the dates.
+    With ``deltaT`` (and ``nIter0``) known, the first file should sit one
+    hour after the segment start and files one hour apart.  Two numbering
+    conventions are accepted: absolute (``(iter0 - nIter0) * deltaT``) or
+    relative to the segment (``iter0 * deltaT``).  Logs which one matched
+    and warns if neither does; never changes the dates.
 
     Returns:
-        dict: the parsed namelist values (possibly empty).
+        dict: the parsed run parameters (possibly empty).
     """
-    nml = read_data_namelist(folder)
-    if 'deltaT' not in nml or not iterations:
-        return nml
-    dt = nml['deltaT']
-    n_iter0 = nml.get('nIter0', 0.0)
-    first_h = (iterations[0] - n_iter0) * dt / 3600.0
-    stride_h = stride * dt / 3600.0 if stride else None
-    logger.info("%s: namelist deltaT=%g s, nIter0=%g -> first file at +%.3f h "
-                "from segment start, file spacing %s h",
-                folder, dt, n_iter0, first_h,
-                f"{stride_h:.3f}" if stride_h is not None else "n/a")
+    prm = read_run_params(folder)
+    if 'deltaT' not in prm or not iterations:
+        return prm
+    dt = prm['deltaT']
+    n_iter0 = prm.get('nIter0', 0.0)
     hour = OUTPUT_CADENCE.total_seconds() / 3600.0
-    if abs(first_h) > 1e-6 or (stride_h is not None and abs(stride_h - hour) > 1e-6):
+    first_abs_h = (iterations[0] - n_iter0) * dt / 3600.0
+    first_rel_h = iterations[0] * dt / 3600.0
+    stride_h = stride * dt / 3600.0 if stride else None
+    if abs(first_abs_h - hour) < 1e-6:
+        conv = 'absolute'
+    elif abs(first_rel_h - hour) < 1e-6:
+        conv = 'relative-to-nIter0'
+    else:
+        conv = None
+    logger.info("%s: %s gives deltaT=%g s, nIter0=%g -> first file at +%.3f h "
+                "(absolute numbering) / +%.3f h (relative), file spacing %s h; "
+                "numbering convention: %s",
+                folder, prm.get('source'), dt, n_iter0, first_abs_h, first_rel_h,
+                f"{stride_h:.3f}" if stride_h is not None else "n/a", conv or 'UNMATCHED')
+    if conv is None or (stride_h is not None and abs(stride_h - hour) > 1e-6):
         logger.warning(
-            "%s: iteration*deltaT dating disagrees with the 'start + n hours' "
-            "rule (first file +%.3f h, spacing %s h). Dates assigned here follow "
-            "the position rule; confirm which is right before trusting them.",
-            folder, first_h, f"{stride_h:.3f}" if stride_h is not None else "n/a")
-    return nml
+            "%s: iteration*deltaT dating disagrees with the 'start + (n+1) hours' "
+            "rule (first file +%.3f h abs / +%.3f h rel, spacing %s h). Dates "
+            "assigned here follow the position rule; check this folder.",
+            folder, first_abs_h, first_rel_h,
+            f"{stride_h:.3f}" if stride_h is not None else "n/a")
+    return prm
 
 
-def discover_timesteps(out_dir: str, field: str = 'Theta',
+def discover_timesteps(out_dir: str, field: str = 'SST', ext: str = 'data',
                        start: datetime = None, end: datetime = None):
-    """Find every available ``<field>.*.shrunk`` file under *out_dir* and date it.
+    """Find every ``<field>.<iteration>.<ext>`` file under *out_dir* and date it.
 
-    Mirrors the ``dir('*/U*.shrunk')`` scan in ``ExtractFields.m`` (but for
-    *field*, so SST extraction doesn't depend on U being present) and its
-    date assignment: folder start time + one hour per file in sorted order.
+    Date rule (Dan Whitt, 2026-09-09): folder start time + (n + 1) hours for
+    the n-th file of the folder in iteration order -- the first file is one
+    hour after the folder start, the last is at the folder end.
 
     Args:
         out_dir (str): parent of the ``YYYY_MM_DD_HHMMSS_to_...`` folders,
             e.g. ``/nobackupp27/dbwhitt/llc_4320/OUT``.
-        field (str, optional): field whose files to discover. Defaults to
-            'Theta'.
+        field (str, optional): filename prefix, e.g. 'SST', 'Eta', 'Theta'.
+            Defaults to 'SST'.
+        ext (str, optional): 'data' (uncompressed) or 'shrunk'. Defaults
+            to 'data'.
         start (datetime, optional): keep only steps with date >= start.
         end (datetime, optional): keep only steps with date < end.
 
@@ -556,8 +636,8 @@ def discover_timesteps(out_dir: str, field: str = 'Theta',
 
         files = []
         for fn in os.listdir(folder):
-            m = SHRUNK_RE.match(fn)
-            if m is not None and m['field'] == field:
+            m = OUTPUT_FILE_RE.match(fn)
+            if m is not None and m['field'] == field and m['ext'] == ext:
                 files.append((int(m['iteration']), fn))
         if not files:
             continue
@@ -568,7 +648,7 @@ def discover_timesteps(out_dir: str, field: str = 'Theta',
         _check_against_namelist(folder, iterations, stride)
 
         for n, (iteration, fn) in enumerate(files):
-            date = t0 + n * OUTPUT_CADENCE
+            date = t0 + (n + 1) * OUTPUT_CADENCE
             if start is not None and date < start:
                 continue
             if end is not None and date >= end:
@@ -580,9 +660,7 @@ def discover_timesteps(out_dir: str, field: str = 'Theta',
 
     steps.sort(key=lambda s: (s.date, s.iteration))
 
-    # Global sanity check: dates must be unique (adjacent folders share a
-    # boundary time in their names; if both contained that hour we'd get a
-    # duplicate and one of the two files would be mis-dated).
+    # Global sanity check: dates must be unique (no hour in two folders).
     dates = [s.date for s in steps]
     if len(set(dates)) != len(dates):
         dupes = sorted({d for d in dates if dates.count(d) > 1})
@@ -592,26 +670,26 @@ def discover_timesteps(out_dir: str, field: str = 'Theta',
 
 
 def infer_timestep_seconds(steps):
-    """Infer the model timestep (seconds) from hourly-spaced iteration numbers.
+    """Model timesteps (seconds) implied by hourly-spaced iteration numbers.
 
-    Only uses consecutive steps *within* the same folder, where the hourly
-    cadence assumption is what the dating rule already relies on.
+    Uses consecutive steps *within* the same folder only.  deltaT varies
+    between folders (5-20 s), so a list of the distinct values seen is
+    returned rather than a single number.
 
     Args:
         steps (list[Timestep]): from `discover_timesteps`.
 
     Returns:
-        float or None: 3600 / (iteration stride), or None if no two
-            consecutive same-folder steps exist or strides disagree.
+        list[float]: sorted distinct values of 3600 / stride; empty if no
+            two consecutive same-folder steps exist.
     """
     strides = set()
     for a, b in zip(steps[:-1], steps[1:]):
         if a.folder == b.folder and b.n_in_folder == a.n_in_folder + 1:
-            strides.add(b.iteration - a.iteration)
-    if len(strides) != 1:
-        return None
-    stride = strides.pop()
-    return OUTPUT_CADENCE.total_seconds() / stride if stride > 0 else None
+            d = b.iteration - a.iteration
+            if d > 0:
+                strides.add(d)
+    return sorted(OUTPUT_CADENCE.total_seconds() / d for d in strides)
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +729,7 @@ class FolderInventory:
         """Sorted field names present with extension *ext* (e.g. 'shrunk')."""
         return sorted(f for (f, e) in self.fields if e == ext)
 
-    def has(self, field: str, ext: str = 'shrunk') -> bool:
+    def has(self, field: str, ext: str = 'data') -> bool:
         return (field, ext) in self.fields
 
 
@@ -697,7 +775,7 @@ def inventory(out_dir: str, max_folders: int = None):
     return out
 
 
-def summarize_inventory(invs, field: str = 'Theta', ext: str = 'shrunk') -> dict:
+def summarize_inventory(invs, field: str = 'SST', ext: str = 'data') -> dict:
     """Roll an `inventory` up into the few facts we need.
 
     Returns:
@@ -716,7 +794,7 @@ def summarize_inventory(invs, field: str = 'Theta', ext: str = 'shrunk') -> dict
         'n_folders': len(invs),
         'combos': dict(sorted(combos.items())),
         'with_field': len(with_field),
-        'first_with': with_field[0].start if with_field else None,
+        'first_with': with_field[0].start + OUTPUT_CADENCE if with_field else None,
         'last_with': with_field[-1].end if with_field else None,
         'without_field': [os.path.basename(i.folder) for i in without],
     }
@@ -857,19 +935,24 @@ def open_zarr_group(store_url: str, mode: str = 'a', endpoint: str = None,
     return zarr.open_group(store=store, mode=mode, use_consolidated=False)
 
 
-def store_is_complete(store_url: str, variable: str, endpoint: str = None,
+def store_is_complete(store_url: str, variables, endpoint: str = None,
                       profile: str = None) -> bool:
-    """True if *store_url* exists, holds *variable*, and was fully written.
+    """True if *store_url* exists, holds all *variables*, and was fully written.
 
     A store is marked ``complete=True`` in its attributes only after every
     variable has been written and verified, so an interrupted run leaves a
     store this returns False for, and a re-run rewrites it.
+
+    Args:
+        variables (str or iterable of str): variable name(s) required.
     """
+    if isinstance(variables, str):
+        variables = [variables]
     try:
         g = open_zarr_group(store_url, mode='r', endpoint=endpoint, profile=profile)
     except Exception:
         return False
-    return bool(g.attrs.get('complete', False)) and variable in g
+    return bool(g.attrs.get('complete', False)) and all(v in g for v in variables)
 
 
 def _ensure_coords(root, FS: int):
@@ -926,19 +1009,131 @@ def write_surface_variable(root, name: str, field: np.ndarray, attrs: dict = Non
     return z
 
 
-def write_grid_store(dest: str, mask_dir: str, FS: int = 4320, endpoint: str = None,
-                     profile: str = None, skip_existing: bool = True) -> str:
-    """Write ``grid.zarr`` with the surface wet-point mask (from hFacC.bits).
+# ---------------------------------------------------------------------------
+# Surface-field table, land masking, grid store, per-hour stores, pipeline
+# ---------------------------------------------------------------------------
 
-    Only the information we can derive from the v2 mask files is written for
-    now: ``maskC`` (True = wet at k=0).  Horizontal grid variables (XC, YC,
-    ...) are deferred until we know where the v2 grid files live / whether
-    the grid is identical to v1's (see Q&A in claude_prompts/llc4320_v2.md).
+# Filename prefix on Pleiades -> (variable name in the Zarr store, attributes).
+# Variable names follow dbof / xmitgcm conventions (Theta, Salt, U, V, Eta,
+# ...) so llc4320-v2 stores read like the LLC4320_RAW/SURFACE ones.
+# SSU/SSV are the model's native face-relative velocity components (not
+# rotated to east/north); rotation needs CS/SN from grid.zarr.
+SURFACE_FIELDS = {
+    'SST': ('Theta', {'long_name': 'sea surface temperature (Theta, k=0)', 'units': 'degC'}),
+    'SSS': ('Salt', {'long_name': 'sea surface salinity (Salt, k=0)', 'units': 'psu'}),
+    'SSU': ('U', {'long_name': 'surface velocity, native i-component (U, k=0), '
+                                'face-relative, not rotated', 'units': 'm s-1'}),
+    'SSV': ('V', {'long_name': 'surface velocity, native j-component (V, k=0), '
+                                'face-relative, not rotated', 'units': 'm s-1'}),
+    'Eta': ('Eta', {'long_name': 'sea surface height anomaly', 'units': 'm'}),
+    'KPPhbl': ('KPPhbl', {'long_name': 'KPP boundary layer depth', 'units': 'm'}),
+    'PhiBot': ('PhiBot', {'long_name': 'bottom pressure potential anomaly', 'units': 'm2 s-2'}),
+    'oceQnet': ('oceQnet', {'long_name': 'net surface heat flux into the ocean', 'units': 'W m-2'}),
+    'oceQsw': ('oceQsw', {'long_name': 'net shortwave radiation into the ocean', 'units': 'W m-2'}),
+    'oceFWflx': ('oceFWflx', {'long_name': 'net surface freshwater flux into the ocean',
+                              'units': 'kg m-2 s-1'}),
+    'oceSflux': ('oceSflux', {'long_name': 'net surface salt flux into the ocean', 'units': 'g m-2 s-1'}),
+    'oceTAUX': ('oceTAUX', {'long_name': 'surface wind stress, native i-component', 'units': 'N m-2'}),
+    'oceTAUY': ('oceTAUY', {'long_name': 'surface wind stress, native j-component', 'units': 'N m-2'}),
+    'SIarea': ('SIarea', {'long_name': 'sea-ice fractional coverage', 'units': '1'}),
+    'SIheff': ('SIheff', {'long_name': 'sea-ice effective thickness', 'units': 'm'}),
+    'SIhsnow': ('SIhsnow', {'long_name': 'snow effective thickness', 'units': 'm'}),
+    'SIuice': ('SIuice', {'long_name': 'sea-ice velocity, native i-component', 'units': 'm s-1'}),
+    'SIvice': ('SIvice', {'long_name': 'sea-ice velocity, native j-component', 'units': 'm s-1'}),
+}
+
+# Fields whose value is legitimately 0 over most of the ocean, so exact
+# zeros cannot be used as a land indicator without a mask.
+ZERO_IS_NOT_LAND = {'SIarea', 'SIheff', 'SIhsnow', 'SIuice', 'SIvice'}
+
+
+def field_variable(prefix: str):
+    """(variable name, attrs) for a filename prefix; unknown prefixes map to themselves."""
+    if prefix in SURFACE_FIELDS:
+        var, attrs = SURFACE_FIELDS[prefix]
+        return var, dict(attrs, source_file_prefix=prefix, level=0)
+    return prefix, {'source_file_prefix': prefix, 'level': 0}
+
+
+def surface_wet_mask(mask_dir: str, var_name: str, FS: int) -> np.ndarray:
+    """k=0 wet mask, shape (13, FS, FS), from the right hFac*.bits for *var_name*.
+
+    U lives on hFacW points, V on hFacS points, everything else on hFacC
+    (`mask_file_for_field`).
+    """
+    mask_file = os.path.join(mask_dir, mask_file_for_field(var_name))
+    return read_mask_level(mask_file, FS, level=0).reshape(N_FACETS, FS, FS)
+
+
+def apply_land_mask(field: np.ndarray, wet: np.ndarray = None, prefix: str = None) -> np.ndarray:
+    """Set land points to NaN.
+
+    With *wet* (bool, same shape) given, land is ``~wet``.  Without it, land
+    is taken to be the points that are exactly 0.0 -- what MITgcm writes
+    over land in ``.data`` output -- except for `ZERO_IS_NOT_LAND` fields,
+    which are returned unchanged with a warning.
+
+    Returns:
+        np.ndarray: float32, modified in place and returned.
+    """
+    if field.dtype != np.float32:
+        field = field.astype(np.float32)
+    if wet is not None:
+        field[~wet] = np.nan
+    elif prefix in ZERO_IS_NOT_LAND:
+        logger.warning("%s: zero is a valid ocean value; no mask dir given, so land "
+                       "is left as 0.0 -- pass --mask-dir for NaN land.", prefix)
+    else:
+        field[field == 0.0] = np.nan
+    return field
+
+
+# MITgcm grid file name -> (xmitgcm/dbof variable name, attrs).  All 2D,
+# one (13, FS, FS) level in compact format.
+GRID_2D_FILES = {
+    'XC': ('XC', {'long_name': 'longitude of cell centre', 'units': 'degrees_east'}),
+    'YC': ('YC', {'long_name': 'latitude of cell centre', 'units': 'degrees_north'}),
+    'XG': ('XG', {'long_name': 'longitude of cell corner', 'units': 'degrees_east'}),
+    'YG': ('YG', {'long_name': 'latitude of cell corner', 'units': 'degrees_north'}),
+    'RAC': ('rA', {'long_name': 'cell area', 'units': 'm2'}),
+    'RAS': ('rAs', {'long_name': 'cell area at south face', 'units': 'm2'}),
+    'RAW': ('rAw', {'long_name': 'cell area at west face', 'units': 'm2'}),
+    'RAZ': ('rAz', {'long_name': 'cell area at corner', 'units': 'm2'}),
+    'DXC': ('dxC', {'long_name': 'cell x size at west face', 'units': 'm'}),
+    'DYC': ('dyC', {'long_name': 'cell y size at south face', 'units': 'm'}),
+    'DXG': ('dxG', {'long_name': 'cell x size at south face', 'units': 'm'}),
+    'DYG': ('dyG', {'long_name': 'cell y size at west face', 'units': 'm'}),
+    'Depth': ('Depth', {'long_name': 'ocean depth', 'units': 'm'}),
+    'AngleCS': ('CS', {'long_name': 'cosine of grid orientation angle', 'units': '1'}),
+    'AngleSN': ('SN', {'long_name': 'sine of grid orientation angle', 'units': '1'}),
+}
+# 3D grid files: only level 0 is stored (as <name>_k0), plus a bool mask.
+GRID_3D_FILES = ('hFacC', 'hFacS', 'hFacW')
+# 1D vertical grid files (nz or nz+1 big-endian float32 values).
+GRID_1D_FILES = {'RC': 'k', 'RF': 'k_p1', 'DRC': 'k_p1', 'DRF': 'k'}
+
+
+def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
+                     FS: int = 4320, endpoint: str = None, profile: str = None,
+                     skip_existing: bool = True) -> str:
+    """Write ``grid.zarr`` for v2 from its own grid files (and/or the bit masks).
+
+    v2 shares v1's horizontal grid but has its own bathymetry, hFac, land
+    mask and vertical grid (Dan Whitt), so everything is read from
+    *grid_dir* (``/nobackupp27/dbwhitt/llc_4320/grid_90x90x19493`` on
+    Pleiades).  Each `GRID_2D_FILES` entry whose ``.data`` file exists with
+    the size of one compact ``13*FS*FS`` float32 level is written; level 0
+    of each `GRID_3D_FILES` file is written as ``<name>_k0``; `GRID_1D_FILES`
+    are written as 1D arrays; ``maskC`` (True = wet at k=0) comes from
+    ``hFacC.bits`` in *mask_dir* if given, else from ``hFacC.data`` level 0,
+    else from ``Depth > 0``.  Files that are missing or of unexpected size
+    are skipped with a warning, so the store is as complete as the inputs
+    allow.
 
     Args:
-        dest (str): destination prefix: local directory or
-            ``s3://bucket/prefix``.
-        mask_dir (str): directory holding hFacC.bits.
+        dest (str): destination prefix: local directory or ``s3://bucket/prefix``.
+        grid_dir (str, optional): directory of MITgcm grid ``.data`` files.
+        mask_dir (str, optional): directory holding ``hFacC.bits``.
         FS (int, optional): facet side. Defaults to 4320.
         endpoint, profile: see `s3_filesystem`.
         skip_existing (bool, optional): leave a complete store alone.
@@ -950,29 +1145,103 @@ def write_grid_store(dest: str, mask_dir: str, FS: int = 4320, endpoint: str = N
     if skip_existing and store_is_complete(url, 'maskC', endpoint, profile):
         logger.info("grid store complete, skipping: %s", url)
         return url
-    mask = read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, level=0)
+    if grid_dir is None and mask_dir is None:
+        raise ValueError("write_grid_store needs grid_dir and/or mask_dir")
+
+    level_bytes = N_FACETS * FS * FS * 4
     root = open_zarr_group(url, mode='w', endpoint=endpoint, profile=profile)
-    root.attrs.update({'model': 'LLC4320_v2', 'FS': FS,
+    root.attrs.update({'model': 'LLC4320_v2', 'FS': FS, 'complete': False,
+                       'grid_dir': grid_dir or '', 'mask_dir': mask_dir or '',
                        'description': 'Static grid information for LLC4320 v2 '
                                       'surface output (see wrangler.ogcm.llc_v2)'})
-    write_surface_variable(root, 'maskC', mask.reshape(N_FACETS, FS, FS),
-                           attrs={'long_name': 'wet-point mask at cell centres, k=0',
-                                  'source': 'hFacC.bits'})
-    root.attrs['complete'] = True
+    written, skipped = [], []
+    hfacc_k0 = depth = None
+
+    if grid_dir is not None:
+        for fname, (var, attrs) in GRID_2D_FILES.items():
+            path = os.path.join(grid_dir, f"{fname}.data")
+            if not os.path.isfile(path):
+                skipped.append(f"{fname}.data (missing)")
+                continue
+            if os.path.getsize(path) != level_bytes:
+                skipped.append(f"{fname}.data (size {os.path.getsize(path)} != {level_bytes})")
+                continue
+            arr = read_data_field(path, FS)
+            write_surface_variable(root, var, arr, attrs=dict(attrs, source_file=f"{fname}.data"))
+            written.append(var)
+            if fname == 'Depth':
+                depth = arr
+        for fname in GRID_3D_FILES:
+            path = os.path.join(grid_dir, f"{fname}.data")
+            if not os.path.isfile(path):
+                skipped.append(f"{fname}.data (missing)")
+                continue
+            size = os.path.getsize(path)
+            if size % level_bytes != 0:
+                skipped.append(f"{fname}.data (size {size} not a multiple of one level)")
+                continue
+            arr = read_data_field(path, FS, level=0)
+            write_surface_variable(root, f"{fname}_k0", arr,
+                                   attrs={'long_name': f'{fname} at k=0 (open fraction)',
+                                          'units': '1', 'source_file': f"{fname}.data",
+                                          'levels_in_file': size // level_bytes})
+            written.append(f"{fname}_k0")
+            if fname == 'hFacC':
+                hfacc_k0 = arr
+        for fname, dim in GRID_1D_FILES.items():
+            path = os.path.join(grid_dir, f"{fname}.data")
+            if not os.path.isfile(path):
+                skipped.append(f"{fname}.data (missing)")
+                continue
+            vals = np.fromfile(path, dtype='>f4').astype(np.float32)
+            if vals.size == 0 or vals.size > 10_000:
+                skipped.append(f"{fname}.data ({vals.size} values; not a 1D vertical file)")
+                continue
+            z = root.create_array(fname, shape=vals.shape, chunks=vals.shape,
+                                  dtype=vals.dtype, overwrite=True, dimension_names=(dim,))
+            z[:] = vals
+            z.attrs['source_file'] = f"{fname}.data"
+            z.attrs['units'] = 'm'
+            written.append(fname)
+
+    if mask_dir is not None:
+        wet = read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, 0).reshape(N_FACETS, FS, FS)
+        mask_src = 'hFacC.bits'
+    elif hfacc_k0 is not None:
+        wet = hfacc_k0 > 0
+        mask_src = 'hFacC.data level 0 > 0'
+    elif depth is not None:
+        wet = depth > 0
+        mask_src = 'Depth.data > 0'
+    else:
+        wet = None
+        skipped.append('maskC (no hFacC.bits, hFacC.data or Depth.data)')
+    if wet is not None:
+        write_surface_variable(root, 'maskC', wet,
+                               attrs={'long_name': 'wet-point mask at cell centres, k=0',
+                                      'source': mask_src})
+        written.append('maskC')
+
+    for item in skipped:
+        logger.warning("grid.zarr: skipped %s", item)
+    logger.info("grid.zarr: wrote %s", written)
+    root.attrs['variables'] = written
+    root.attrs['skipped'] = skipped
+    root.attrs['complete'] = 'maskC' in written
     return url
 
 
-def write_timestep_store(dest: str, step: Timestep, field: np.ndarray, var_name: str,
-                         var_attrs: dict = None, endpoint: str = None,
-                         profile: str = None) -> str:
-    """Write one ``{YYYYMMDDTHH}.zarr`` store holding one surface variable.
+def write_timestep_store(dest: str, step: Timestep, fields: dict, complete: bool = True,
+                         endpoint: str = None, profile: str = None) -> str:
+    """Write one ``{YYYYMMDDTHH}.zarr`` store holding one or more surface variables.
 
     Args:
         dest (str): destination prefix (local dir or ``s3://bucket/prefix``).
-        step (Timestep): the output step (supplies date/iteration/source).
-        field (np.ndarray): (13, FS, FS) surface field.
-        var_name (str): variable name in the store, e.g. 'Theta'.
-        var_attrs (dict, optional): variable attributes.
+        step (Timestep): the output hour (supplies date/iteration/source).
+        fields (dict): ``{var_name: (array (13, FS, FS), attrs dict)}``.
+        complete (bool, optional): mark the store complete at the end.
+            Pass False when some requested field was unavailable so a re-run
+            revisits the store. Defaults to True.
         endpoint, profile: see `s3_filesystem`.
 
     Returns:
@@ -980,82 +1249,126 @@ def write_timestep_store(dest: str, step: Timestep, field: np.ndarray, var_name:
     """
     url = f"{str(dest).rstrip('/')}/{step.store_name}"
     root = open_zarr_group(url, mode='w', endpoint=endpoint, profile=profile)
+    any_arr = next(iter(fields.values()))[0]
     root.attrs.update({
         'model': 'LLC4320_v2',
         'selected_iteration': int(step.iteration),
         'selected_date_utc': step.date.strftime('%Y-%m-%d %H:%M:%S'),
         'source_folder': os.path.basename(step.folder),
-        'source_file': os.path.basename(step.path),
-        'FS': int(field.shape[1]),
+        'FS': int(any_arr.shape[1]),
+        'variables': sorted(fields),
         'complete': False,
     })
-    write_surface_variable(root, var_name, field, attrs=var_attrs)
-    root.attrs['complete'] = True
+    for var, (arr, attrs) in fields.items():
+        write_surface_variable(root, var, arr, attrs=attrs)
+    root.attrs['complete'] = bool(complete)
     return url
 
 
-SST_ATTRS = {'long_name': 'sea surface temperature (Theta, k=0)',
-             'units': 'degC', 'source_field': 'Theta', 'level': 0}
-
-
-def extract_sst(out_dir: str, mask_dir: str, dest: str, FS: int = 4320,
-                start: datetime = None, end: datetime = None, limit: int = None,
-                skip_existing: bool = True, dry_run: bool = False,
-                write_grid: bool = True, endpoint: str = None,
-                profile: str = None) -> dict:
-    """End-to-end: discover Theta output, decode SST, write one Zarr store per hour.
+def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = None,
+                    grid_dir: str = None, FS: int = 4320, start: datetime = None,
+                    end: datetime = None, limit: int = None, skip_existing: bool = True,
+                    dry_run: bool = False, write_grid: bool = True, endpoint: str = None,
+                    profile: str = None) -> dict:
+    """End-to-end: discover hourly surface ``.data`` output, write one Zarr store per hour.
 
     Idempotent (like PAB's ``s3_push.py``): stores already marked complete
     are skipped, so an interrupted run can simply be restarted, and a
     re-run after new output lands on disk only processes the new hours.
 
     Args:
-        out_dir (str): raw-output parent, e.g.
-            ``/nobackupp27/dbwhitt/llc_4320/OUT``.
-        mask_dir (str): directory holding hFacC.bits.
+        out_dir (str): raw-output parent, e.g. ``/nobackupp27/dbwhitt/llc_4320/OUT``.
         dest (str): ``s3://llc4320-v2/SURFACE`` or a local directory.
+        fields (iterable of str, optional): filename prefixes to extract,
+            e.g. ``['SST', 'SSS', 'Eta']`` (see `SURFACE_FIELDS`). Discovery
+            is driven by the first one. Defaults to ``('SST',)``.
+        mask_dir (str, optional): directory with ``hFac*.bits``; land -> NaN
+            from the k=0 masks. Without it, exact zeros are treated as land.
+        grid_dir (str, optional): v2 grid ``.data`` directory for ``grid.zarr``.
         FS (int, optional): facet side. Defaults to 4320.
-        start, end (datetime, optional): date window (see
-            `discover_timesteps`).
-        limit (int, optional): process at most this many steps (testing).
+        start, end (datetime, optional): date window (see `discover_timesteps`).
+        limit (int, optional): process at most this many hours (testing).
         skip_existing (bool, optional): skip complete stores. Defaults to True.
         dry_run (bool, optional): only list what would be done.
-        write_grid (bool, optional): also write/refresh ``grid.zarr``.
+        write_grid (bool, optional): also write ``grid.zarr`` (needs
+            *grid_dir* and/or *mask_dir*; skipped with a warning otherwise).
         endpoint, profile: see `s3_filesystem`.
 
     Returns:
-        dict: counts -- {'discovered', 'written', 'skipped'} -- plus
-            'dt_seconds' (inferred model timestep, or None).
+        dict: {'discovered', 'written', 'skipped', 'incomplete', 'dt_seconds'}.
     """
-    steps = discover_timesteps(out_dir, 'Theta', start=start, end=end)
+    fields = list(fields)
+    if not fields:
+        raise ValueError("fields must not be empty")
+    var_of = {f: field_variable(f) for f in fields}
+    variables = [var_of[f][0] for f in fields]
+
+    steps = discover_timesteps(out_dir, fields[0], 'data', start=start, end=end)
     if limit is not None:
         steps = steps[:limit]
-    dt_sec = infer_timestep_seconds(steps)
-    logger.info("Discovered %d Theta steps under %s (inferred model dt = %s s)",
-                len(steps), out_dir, dt_sec)
-    stats = {'discovered': len(steps), 'written': 0, 'skipped': 0,
-             'dt_seconds': dt_sec}
+    dts = infer_timestep_seconds(steps)
+    logger.info("Discovered %d hourly %s steps under %s (model dt values: %s s)",
+                len(steps), fields[0], out_dir, dts)
+    stats = {'discovered': len(steps), 'written': 0, 'skipped': 0, 'incomplete': 0,
+             'dt_seconds': dts}
 
     if dry_run:
         for s in steps:
-            logger.info("would write %s/%s  <- %s", dest, s.store_name, s.path)
+            logger.info("would write %s/%s  <- %s  [%s]", dest, s.store_name,
+                        os.path.basename(s.path), ','.join(fields))
         return stats
 
     if write_grid:
-        write_grid_store(dest, mask_dir, FS, endpoint, profile,
-                         skip_existing=skip_existing)
+        if grid_dir is None and mask_dir is None:
+            logger.warning("no --grid-dir / --mask-dir given: grid.zarr not written")
+        else:
+            write_grid_store(dest, grid_dir, mask_dir, FS, endpoint, profile,
+                             skip_existing=skip_existing)
+
+    wet_cache = {}
+
+    def wet_for(var):
+        if mask_dir is None:
+            return None
+        key = mask_file_for_field(var)
+        if key not in wet_cache:
+            wet_cache[key] = surface_wet_mask(mask_dir, var, FS)
+        return wet_cache[key]
 
     for s in steps:
         url = f"{str(dest).rstrip('/')}/{s.store_name}"
-        if skip_existing and store_is_complete(url, 'Theta', endpoint, profile):
+        if skip_existing and store_is_complete(url, variables, endpoint, profile):
             logger.info("complete, skipping: %s", url)
             stats['skipped'] += 1
             continue
-        logger.info("reading %s (iteration %d, %s)", s.path, s.iteration,
-                    s.date.isoformat())
-        sst = read_shrunk_field(s.folder, mask_dir, 'Theta', s.iteration, FS,
-                                level=0, dry_value=np.nan)
-        write_timestep_store(dest, s, sst, 'Theta', SST_ATTRS, endpoint, profile)
-        logger.info("wrote %s", url)
-        stats['written'] += 1
+        logger.info("%s (iteration %d): reading %s", s.date.isoformat(), s.iteration,
+                    ','.join(fields))
+        arrays, missing = {}, []
+        for prefix in fields:
+            var, attrs = var_of[prefix]
+            path = os.path.join(s.folder, f"{prefix}.{s.iteration:010d}.data")
+            if not os.path.isfile(path):
+                logger.warning("missing %s", path)
+                missing.append(prefix)
+                continue
+            arr = read_data_field(path, FS)
+            arr = apply_land_mask(arr, wet_for(var), prefix)
+            arrays[var] = (arr, dict(attrs, source_file=os.path.basename(path)))
+        if not arrays:
+            logger.warning("no requested fields found for %s; store not written", s.store_name)
+            stats['incomplete'] += 1
+            continue
+        write_timestep_store(dest, s, arrays, complete=not missing, endpoint=endpoint,
+                             profile=profile)
+        if missing:
+            stats['incomplete'] += 1
+            logger.warning("wrote %s without %s (left incomplete)", url, missing)
+        else:
+            stats['written'] += 1
+            logger.info("wrote %s", url)
     return stats
+
+
+def extract_sst(out_dir: str, dest: str, mask_dir: str = None, **kwargs) -> dict:
+    """SST-only convenience wrapper around `extract_surface` (fields=['SST'])."""
+    return extract_surface(out_dir, dest, fields=['SST'], mask_dir=mask_dir, **kwargs)

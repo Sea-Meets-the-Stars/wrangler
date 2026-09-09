@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Extract global LLC4320 v2 surface fields from hourly .data output to Zarr (local or s3://llc4320-v2)
+"""
+
+from wrangler.scripts import llc_v2_surface
+
+if __name__ == '__main__':
+    args = llc_v2_surface.parser()
+    llc_v2_surface.main(args)

@@ -91,12 +91,19 @@ def main(args):
     print(f"\nglobal: wet fraction {n_wet / field.size:.3f}, "
           f"min {np.nanmin(field):.3f}, max {np.nanmax(field):.3f}, "
           f"mean {np.nanmean(field):.3f}")
-    bad = int(((field < SST_MIN) | (field > SST_MAX)).sum())
     zero = int((field == 0.0).sum())
-    print(f"values outside [{SST_MIN}, {SST_MAX}]: {bad}   exact zeros: {zero} "
-          f"({zero / max(n_wet, 1):.4f} of wet points -- should be ~0)")
-    verdict = 'OK' if bad == 0 and zero / max(n_wet, 1) < 1e-3 else 'SUSPICIOUS'
-    print(f"value check: {verdict}")
+    if args.var == 'Theta':
+        bad = int(((field < SST_MIN) | (field > SST_MAX)).sum())
+        print(f"values outside [{SST_MIN}, {SST_MAX}]: {bad}   exact zeros: {zero} "
+              f"({zero / max(n_wet, 1):.4f} of wet points -- should be ~0)")
+        verdict = 'OK' if bad == 0 and zero / max(n_wet, 1) < 1e-3 else 'SUSPICIOUS'
+        print(f"value check: {verdict}")
+    else:
+        bad = 0
+        print(f"exact zeros: {zero} ({zero / max(n_wet, 1):.4f} of finite points; "
+              f"land is 0, not NaN, in grid variables)")
+        print("value check: n/a (plausibility range is only defined for Theta); "
+              "judge the per-face min/max above")
 
     result = {'n_wet': n_wet, 'n_bad': bad, 'n_zero': zero}
     if args.eta:

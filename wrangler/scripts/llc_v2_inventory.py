@@ -20,8 +20,8 @@ import os
 def parser(options=None):
     p = argparse.ArgumentParser(description='Inventory LLC4320 v2 raw-output folders.')
     p.add_argument('out_dir', help='raw-output parent, e.g. /nobackupp27/dbwhitt/llc_4320/OUT')
-    p.add_argument('--field', default='Theta', help='field to look for as .shrunk (default Theta)')
-    p.add_argument('--ext', default='shrunk', help='extension to look for (default shrunk)')
+    p.add_argument('--field', default='SST', help='field to look for (default SST)')
+    p.add_argument('--ext', default='data', help='extension to look for (default data)')
     p.add_argument('--max-folders', type=int, help='only inventory the first N folders')
     p.add_argument('--find', metavar='ROOT', help='also search ROOT for *.shrunk files')
     p.add_argument('--depth', type=int, default=3, help='max depth for --find (default 3)')

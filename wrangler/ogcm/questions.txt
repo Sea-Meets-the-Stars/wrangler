@@ -1,0 +1,145 @@
+Subject: LLC4320 v2 raw output on Pleiades: questions on where the compressed fields live, the masks, and dating
+
+Hi Dimitris, Kaitlin, and Dan,
+
+I am writing a Python pipeline to extract global surface fields from the
+LLC4320 v2 raw output on Pleiades, starting with SST (Theta at k=0), and to
+publish them as Zarr on a Nautilus S3 bucket. I have a working Python port
+of the .shrunk/.bits decompression from Kaitlin's matlab_v0 toolbox
+(llc_shrunk_mex.c), and an extraction driver that follows the
+date-assignment loop in Dimitris' ExtractFields.m. Running it on Pleiades
+turned up a few things I cannot resolve from the files alone. I have
+grouped the questions by who is most likely to know, but please answer
+whichever you can.
+
+WHERE THE COMPRESSED 3D OUTPUT LIVES (Dimitris, Dan)
+
+1. The folder /nobackupp27/dbwhitt/llc_4320/OUT/2023_01_01_000000_to_2023_01_08_060000
+   contains the namelists and Eta.*.data but no compressed 3D fields (no
+   Theta.*.shrunk, U.*.shrunk, etc.). Does the compressed 3D output exist
+   only from some later date (ExtractFields.m discards everything before
+   2023-03-27), or does it live somewhere else, for example under
+   /nobackupp29/bcnelson/MITgcm/compressedOutput?
+
+>All compressed 3-D output is available back to Jan 1 2023 01:00 UTC. 
+>But most of the 3-D shrunk output from Jan  - Jun 2023  now lives on the export2 S3 disk
+>mc ls bdt-llc4320-v2/bdt-llc4320-v2/llc_4320_v2 
+>Email support@nas.nasa.gov to get access to export2
+
+>Example:
+>dbwhitt@pfe20:/nobackupp27/dbwhitt/llc_4320/OUT/2023_01_01_000000_to_2023_01_08_060000> module load S3/mc
+
+>dbwhitt@pfe20:/nobackupp27/dbwhitt/llc_4320/OUT/2023_01_01_000000_to_2023_01_08_060000> mc ls bdt-llc4320-v2/bdt-llc4320-v2/llc_4320_v2
+
+>[2026-03-04 20:15:59 PST]     0B STANDARD /
+>[2026-09-07 09:09:57 PDT]     0B OUT/
+>[2026-09-07 09:09:57 PDT]     0B bitmask.4320x173/
+>[2026-09-07 09:09:57 PDT]     0B grid/
+>[2026-09-07 09:09:57 PDT]     0B mc_test_small/
+
+>So, the data on export2 requires specialized handling, e.g. using mc, since it is not a POSIX file system like nobackup.
+
+2. Dan: which directory of .shrunk files does "extract4320 -d <dir>"
+   normally point at for this run, and does the tool assume the naming
+   Theta.<10-digit iteration>.shrunk for every segment of the run?
+
+>I don’t know if there is a default folder -d <dir> or if you can run it without the standard 10 digit numbering convention. 
+>I always pass in a run folder in my usage and use files with 10-digit numbering, e.g. 
+>./extract4320 \
+
+>    -d /nobackupp27/dbwhitt/llc_4320/OUT/2023_03_26_230000_to_2023_03_31_080000 \
+>    -m /nobackupp29/bcnelson/MITgcm/compressedOutput/work/bitmask.4320x173 \
+>    -i offsets.idx \
+>    -O ./regions/sea_of_iroise/test_Theta.data \
+>    29000 Theta \
+>    1500,10691,1  150,200,42
+
+>Note that you don’t need to pass the leading zeros of the time step number though.
+
+See /nobackupp27/dbwhitt/llc_4320/OUT/proc/extract/dan_v0
+
+MASK FILES AND FORMAT (Kaitlin, Dan)
+
+3. Where do hFacC.bits, hFacS.bits, and hFacW.bits live on Pleiades?
+   ExtractFields.m uses maskDir, but that is set in the matlab_v0 setup
+   script, and /nobackup/kzhang is not readable to me.
+
+> /nobackupp29/bcnelson/MITgcm/compressedOutput/work/bitmask.4320x173/
+>   ExtractFields.m uses maskDir, but that is set in the matlab_v0 setup
+>   script, and /nobackup/kzhang is not readable to me.
+
+4. Are those .bits files the same content as
+   /nobackupp29/bcnelson/MITgcm/compressedOutput/work/bitmask.4320x173,
+   just renamed? If not, how does the format differ? The name suggests
+   173 vertical levels; is that right?
+
+> I think you can assume yes (but see my response to 3).  
+> 173 vertical levels is correct.
+
+5. I have assumed each .shrunk file is a flat stream of big-endian float32
+   wet-point values in facet-major, row-major order, one level after
+   another, with the mask bits packed LSB-first, and no header or record
+   markers. Is that correct for every field?
+
+> Dan thinks so
+
+6. As far as I can tell, Kaitlin's offsets.mat (off_C, off_S, off_W) and
+   Dan's offsets.idx are only needed for reading sub-regions. Is there
+   anything in them that a full-global reader also needs? (offsets.idx is
+   about 200 MB, so I would rather not depend on it if I do not have to.)
+
+> Dan thinks so
+
+TIMESTEP AND DATING (Dimitris)
+
+7. What is the model timestep (deltaT), and does nIter0 restart at 0 in
+   every segment folder? The Eta files step by 720 iterations starting at
+   720, so I want to confirm whether output is hourly with a 5 s step, and
+   whether the first file in a folder corresponds to the folder's start
+   time or to one hour after it.
+
+>  The model timestep deltaT ranges from 5 seconds to 20 seconds, depending on the folder/run.
+> You can find it in STDOUT.0* in each folder.
+
+>They only step by 720 and start at 720 in the first folder, when deltaT = 5 and nIter0=0. Both deltaT and nIter0=0 vary between folders. Every folder contains snapshot outputs separated hourly for all variables. The numbering Field.XXXXXXXXXX. is by time steps in the run, after nIter0. The first output in each folder is at one hour after the first time in the folder name. The last output in each folder is at the  second time in the folder name. See attached manifest relating SST files to simulated date/time.
+
+8. The date-assignment loop in ExtractFields.m labels the n-th file in a
+   folder as the folder start time plus n hours. Is the end time in the
+   folder name exclusive (the boundary hour appears only in the next
+   folder), or do adjacent folders both contain that hour?
+
+>See response to 7 above. All output is only available once; adjacent folders do not contain any identical time steps. The boundary hour output is found in the folder/run where it represents the last time step, not in the folder where it represents the initial data.
+
+
+GRID AND RUN STATUS (Dimitris)
+
+9. Is v2 on the identical LLC4320 horizontal grid as the original run, so
+   that XC, YC, rA, Depth can be reused? If not, where is the v2 grid
+   directory (XC.data, YC.data, Depth.data, hFacC.data), i.e. what is
+   gridDir in your setup?
+
+>The horizontal grid is the same, XC, YC, grid cell areas etc. 
+> Depth is not the same, bathymetry is not the same, land mask is not the same, hFac not the same, vertical grid is not the same, etc.
+
+>/nobackupp27/dbwhitt/llc_4320/grid_90x90x19493
+>I’m not sure what you are looking for with “gridDir” 
+
+
+10. Is the run still producing output, and roughly what date range is
+    complete on disk now?
+
+> Yes, Jan 1 2023 - Feb 8 2024
+
+
+11. Is there a written description of the compressed format and the
+    bitmask file anywhere, or are the C/C++ sources the only reference?
+
+>No, there is no clean description I’m aware of. Maybe take a look here: 
+/nobackupp27/dbwhitt/llc_4320/OUT/proc/extract
+>Beware this is active code!
+
+Questions 1 and 3 are the two that block me right now; the rest I can
+work around for a first pass.
+
+Thanks,
+Xavier
