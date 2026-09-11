@@ -330,7 +330,7 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
     stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'],
                                    mask_dir=mask_dir, FS=FS)
     assert stats == {'discovered': 5, 'written': 5, 'skipped': 0, 'incomplete': 0,
-                     'dt_seconds': [5.0, 10.0]}
+                     'dt_seconds': [5.0, 10.0], 'unreadable_folders': []}
 
     names = sorted(p.name for p in dest.iterdir())
     assert names == ['20230101T01.zarr', '20230101T02.zarr', '20230101T03.zarr',
@@ -398,7 +398,7 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
         stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'dest3'), fields=['SST', 'SSU'],
                                        FS=FS, limit=1, write_grid=False)
     assert stats == {'discovered': 1, 'written': 0, 'skipped': 0, 'incomplete': 1,
-                     'dt_seconds': []}
+                     'dt_seconds': [], 'unreadable_folders': []}
     g3 = zarr.open_group(str(tmp_path / 'dest3' / '20230101T01.zarr'), mode='r',
                          use_consolidated=False)
     assert g3.attrs['complete'] is False and g3.attrs['variables'] == ['Theta']
@@ -678,9 +678,108 @@ def test_inventory_and_summary(tmp_path, capsys):
     summ2 = llc_v2_inventory.main(llc_v2_inventory.parser(
         [str(out_dir), '--field', 'Theta', '--ext', 'shrunk', '--find', str(out_dir), '--depth', '2']))
     out = capsys.readouterr().out
-    assert summ2 == summ
+    assert summ2 == {**summ, 'unreadable': []}
     assert 'shrunk:[-]  data:[Eta,oceQnet]' in out
     assert 'shrunk:[Salt,Theta,U,V]' in out
     assert 'with Theta.*.shrunk: 1   (2023-03-27 01:00 to 2023-03-30 00:00)' in out
     assert f'folders lacking it: {a.name}' in out
     assert '*.shrunk files under' in out and ': 9' in out
+
+
+# ---------------------------------------------------------------------------
+# Permission errors on Pleiades (2026-09-10): an unlistable newest folder and
+# an unreadable `data` entry must be skipped, not crash the run.
+# ---------------------------------------------------------------------------
+
+import stat
+import contextlib
+
+
+@contextlib.contextmanager
+def _no_access(*paths):
+    """Temporarily chmod 000 the given paths (restored afterwards for cleanup)."""
+    saved = [(p, os.stat(p).st_mode) for p in paths]
+    try:
+        for p, _ in saved:
+            os.chmod(p, 0)
+        yield
+    finally:
+        for p, mode in saved:
+            os.chmod(p, mode)
+
+
+@pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0,
+                    reason="chmod 000 does not block root")
+def test_permission_errors_are_skipped(tmp_path, caplog):
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    f1 = os.path.join(out_dir, SEG1[0])
+    f2 = os.path.join(out_dir, SEG2[0])
+    # Folder 1: replace the `data` namelist by an unreadable *directory* named
+    # data/ (as on Pleiades) and make STDOUT unreadable too.
+    os.remove(os.path.join(f1, 'data'))
+    os.mkdir(os.path.join(f1, 'data'))
+    open(os.path.join(f1, 'STDOUT.0000'), 'w').write("(PID.TID 0000.0001) > deltaT=5.,\n")
+    # Folder 2 (the "newest, still being written" one): not listable at all.
+    with _no_access(os.path.join(f1, 'data'), os.path.join(f1, 'STDOUT.0000'), f2):
+        with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+            # Parameter readers: no crash, empty results.
+            assert llc_v2.read_data_namelist(f1) == {}
+            assert llc_v2.read_stdout_params(f1) == {}
+            assert llc_v2.read_run_params(f1) == {'source': None}
+
+            # Discovery: folder 2 skipped and reported; folder 1 still dated.
+            unreadable = []
+            steps = llc_v2.discover_timesteps(out_dir, 'SST', unreadable=unreadable)
+            assert [s.date.hour for s in steps] == [1, 2, 3]
+            assert unreadable == [f2]
+
+            # Inventory: same.
+            unreadable = []
+            invs = llc_v2.inventory(out_dir, unreadable=unreadable)
+            assert [os.path.basename(i.folder) for i in invs] == [SEG1[0]]
+            assert unreadable == [f2]
+            assert 'data/' in invs[0].other
+
+            # Dry run and pipeline stats.
+            stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'd'), FS=FS, dry_run=True)
+            assert stats['discovered'] == 3
+            assert stats['unreadable_folders'] == [SEG2[0]]
+        assert caplog.text.count('cannot list folder') >= 2
+        assert 'cannot read STDOUT' in caplog.text
+
+        # CLI summaries mention the skipped folder.
+        from wrangler.scripts import llc_v2_inventory, llc_v2_surface
+        import io, contextlib as _cl
+        buf = io.StringIO()
+        with _cl.redirect_stdout(buf):
+            summ = llc_v2_inventory.main(llc_v2_inventory.parser([out_dir, '--quiet']))
+        assert summ['unreadable'] == [SEG2[0]]
+        assert 'unreadable (permission denied), skipped: 1' in buf.getvalue()
+        buf = io.StringIO()
+        with _cl.redirect_stdout(buf):
+            llc_v2_surface.main(llc_v2_surface.parser([out_dir, str(tmp_path / 'd'), '--FS', str(FS),
+                                                       '--dry-run']))
+        assert 'unreadable_folders=1' in buf.getvalue() and SEG2[0] in buf.getvalue()
+
+    # An unreadable *field file* is treated as missing (store left incomplete).
+    pytest.importorskip('zarr')
+    sst0 = os.path.join(f1, 'SST.0000000720.data')
+    with _no_access(sst0):
+        with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+            stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'e'), fields=['SST', 'SSS'],
+                                           FS=FS, limit=1, write_grid=False)
+    assert stats['incomplete'] == 1 and stats['written'] == 0
+    assert 'treated as missing' in caplog.text
+
+    # An unreadable grid file is recorded in `skipped`, the rest is written.
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    n = 13 * FS * FS
+    _write_data(grid_dir / 'Depth.data', np.where(truth['wet'], 100.0, 0.0).astype(np.float32))
+    _write_data(grid_dir / 'XC.data', np.zeros(n, np.float32))
+    with _no_access(str(grid_dir / 'XC.data')):
+        url = llc_v2.write_grid_store(str(tmp_path / 'g'), grid_dir=str(grid_dir), FS=FS)
+    import zarr
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['variables'] == ['Depth', 'maskC']
+    assert any(s.startswith('XC.data (Permission denied') for s in g.attrs['skipped'])

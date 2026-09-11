@@ -378,10 +378,15 @@ def read_data_namelist(folder: str, keys=NAMELIST_KEYS) -> dict:
             ``data`` file.
     """
     path = os.path.join(folder, 'data')
-    if not os.path.isfile(path):
+    try:
+        if not os.path.isfile(path):
+            # Some folders on Pleiades have a *directory* named data/ instead.
+            return {}
+        with open(path, errors='replace') as f:
+            lines = [ln for ln in f if not ln.lstrip().startswith('#')]
+    except OSError as e:
+        logger.warning("%s: cannot read (%s); no namelist parameters", path, e.strerror)
         return {}
-    with open(path, errors='replace') as f:
-        lines = [ln for ln in f if not ln.lstrip().startswith('#')]
     return _parse_params('\n'.join(lines), keys)
 
 
@@ -399,12 +404,16 @@ def read_stdout_params(folder: str, keys=NAMELIST_KEYS, max_bytes: int = 4_000_0
     Returns:
         dict: ``{key: float}``; ``{}`` if no STDOUT file exists.
     """
-    cands = sorted(fn for fn in os.listdir(folder) if fn.startswith('STDOUT.'))
-    if not cands:
+    try:
+        cands = sorted(fn for fn in os.listdir(folder) if fn.startswith('STDOUT.'))
+        if not cands:
+            return {}
+        path = os.path.join(folder, 'STDOUT.0000' if 'STDOUT.0000' in cands else cands[0])
+        with open(path, errors='replace') as f:
+            text = f.read(max_bytes)
+    except OSError as e:
+        logger.warning("%s: cannot read STDOUT (%s); no run parameters", folder, e.strerror)
         return {}
-    path = os.path.join(folder, 'STDOUT.0000' if 'STDOUT.0000' in cands else cands[0])
-    with open(path, errors='replace') as f:
-        text = f.read(max_bytes)
     return _parse_params(text, keys)
 
 
@@ -596,7 +605,8 @@ def _check_against_namelist(folder: str, iterations, stride):
 
 
 def discover_timesteps(out_dir: str, field: str = 'SST', ext: str = 'data',
-                       start: datetime = None, end: datetime = None):
+                       start: datetime = None, end: datetime = None,
+                       unreadable: list = None):
     """Find every ``<field>.<iteration>.<ext>`` file under *out_dir* and date it.
 
     Date rule (Dan Whitt, 2026-09-09): folder start time + (n + 1) hours for
@@ -612,6 +622,10 @@ def discover_timesteps(out_dir: str, field: str = 'SST', ext: str = 'data',
             to 'data'.
         start (datetime, optional): keep only steps with date >= start.
         end (datetime, optional): keep only steps with date < end.
+        unreadable (list, optional): if given, paths of output folders that
+            could not be listed (permission denied, e.g. the segment still
+            being written) are appended to it. They are always skipped
+            with a warning.
 
     Returns:
         list[Timestep]: sorted by date.
@@ -634,8 +648,15 @@ def discover_timesteps(out_dir: str, field: str = 'SST', ext: str = 'data',
             logger.debug("Skipping non-output folder %s", folder)
             continue
 
+        try:
+            names = os.listdir(folder)
+        except OSError as e:
+            logger.warning("%s: cannot list folder (%s); skipped", folder, e.strerror)
+            if unreadable is not None:
+                unreadable.append(folder)
+            continue
         files = []
-        for fn in os.listdir(folder):
+        for fn in names:
             m = OUTPUT_FILE_RE.match(fn)
             if m is not None and m['field'] == field and m['ext'] == ext:
                 files.append((int(m['iteration']), fn))
@@ -752,12 +773,15 @@ def inventory_folder(folder: str) -> FolderInventory:
                            fields=fields, other=other)
 
 
-def inventory(out_dir: str, max_folders: int = None):
+def inventory(out_dir: str, max_folders: int = None, unreadable: list = None):
     """Inventory every ``YYYY_MM_DD_HHMMSS_to_...`` folder under *out_dir*.
 
     Args:
         out_dir (str): raw-output parent.
         max_folders (int, optional): stop after this many folders.
+        unreadable (list, optional): if given, folders that cannot be
+            listed (permission denied) are appended; they are skipped with
+            a warning either way.
 
     Returns:
         list[FolderInventory]: in name (= chronological) order.
@@ -769,7 +793,13 @@ def inventory(out_dir: str, max_folders: int = None):
         folder = os.path.join(out_dir, entry)
         if not os.path.isdir(folder) or FOLDER_RE.match(entry) is None:
             continue
-        out.append(inventory_folder(folder))
+        try:
+            out.append(inventory_folder(folder))
+        except OSError as e:
+            logger.warning("%s: cannot list folder (%s); skipped", folder, e.strerror)
+            if unreadable is not None:
+                unreadable.append(folder)
+            continue
         if max_folders is not None and len(out) >= max_folders:
             break
     return out
@@ -1166,7 +1196,11 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
             if os.path.getsize(path) != level_bytes:
                 skipped.append(f"{fname}.data (size {os.path.getsize(path)} != {level_bytes})")
                 continue
-            arr = read_data_field(path, FS)
+            try:
+                arr = read_data_field(path, FS)
+            except OSError as e:
+                skipped.append(f"{fname}.data ({e.strerror})")
+                continue
             write_surface_variable(root, var, arr, attrs=dict(attrs, source_file=f"{fname}.data"))
             written.append(var)
             if fname == 'Depth':
@@ -1180,7 +1214,11 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
             if size % level_bytes != 0:
                 skipped.append(f"{fname}.data (size {size} not a multiple of one level)")
                 continue
-            arr = read_data_field(path, FS, level=0)
+            try:
+                arr = read_data_field(path, FS, level=0)
+            except OSError as e:
+                skipped.append(f"{fname}.data ({e.strerror})")
+                continue
             write_surface_variable(root, f"{fname}_k0", arr,
                                    attrs={'long_name': f'{fname} at k=0 (open fraction)',
                                           'units': '1', 'source_file': f"{fname}.data",
@@ -1193,7 +1231,11 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
             if not os.path.isfile(path):
                 skipped.append(f"{fname}.data (missing)")
                 continue
-            vals = np.fromfile(path, dtype='>f4').astype(np.float32)
+            try:
+                vals = np.fromfile(path, dtype='>f4').astype(np.float32)
+            except OSError as e:
+                skipped.append(f"{fname}.data ({e.strerror})")
+                continue
             if vals.size == 0 or vals.size > 10_000:
                 skipped.append(f"{fname}.data ({vals.size} values; not a 1D vertical file)")
                 continue
@@ -1204,9 +1246,15 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
             z.attrs['units'] = 'm'
             written.append(fname)
 
+    wet = None
     if mask_dir is not None:
-        wet = read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, 0).reshape(N_FACETS, FS, FS)
-        mask_src = 'hFacC.bits'
+        try:
+            wet = read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, 0).reshape(N_FACETS, FS, FS)
+            mask_src = 'hFacC.bits'
+        except OSError as e:
+            skipped.append(f"hFacC.bits ({e.strerror}); falling back for maskC")
+    if wet is not None:
+        pass
     elif hfacc_k0 is not None:
         wet = hfacc_k0 > 0
         mask_src = 'hFacC.data level 0 > 0'
@@ -1303,14 +1351,18 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
     var_of = {f: field_variable(f) for f in fields}
     variables = [var_of[f][0] for f in fields]
 
-    steps = discover_timesteps(out_dir, fields[0], 'data', start=start, end=end)
+    unreadable = []
+    steps = discover_timesteps(out_dir, fields[0], 'data', start=start, end=end,
+                               unreadable=unreadable)
     if limit is not None:
         steps = steps[:limit]
     dts = infer_timestep_seconds(steps)
-    logger.info("Discovered %d hourly %s steps under %s (model dt values: %s s)",
-                len(steps), fields[0], out_dir, dts)
+    logger.info("Discovered %d hourly %s steps under %s (model dt values: %s s); "
+                "%d unreadable folder(s) skipped",
+                len(steps), fields[0], out_dir, dts, len(unreadable))
     stats = {'discovered': len(steps), 'written': 0, 'skipped': 0, 'incomplete': 0,
-             'dt_seconds': dts}
+             'dt_seconds': dts,
+             'unreadable_folders': [os.path.basename(u) for u in unreadable]}
 
     if dry_run:
         for s in steps:
@@ -1351,7 +1403,12 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
                 logger.warning("missing %s", path)
                 missing.append(prefix)
                 continue
-            arr = read_data_field(path, FS)
+            try:
+                arr = read_data_field(path, FS)
+            except (OSError, ValueError) as e:
+                logger.warning("cannot read %s (%s); treated as missing", path, e)
+                missing.append(prefix)
+                continue
             arr = apply_land_mask(arr, wet_for(var), prefix)
             arrays[var] = (arr, dict(attrs, source_file=os.path.basename(path)))
         if not arrays:

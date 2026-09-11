@@ -72,7 +72,10 @@ def main(args):
         write_grid=not args.no_grid, endpoint=args.endpoint, profile=args.profile)
     print(f"discovered={stats['discovered']} written={stats['written']} "
           f"skipped={stats['skipped']} incomplete={stats['incomplete']} "
+          f"unreadable_folders={len(stats['unreadable_folders'])} "
           f"model_dt_s={stats['dt_seconds']}")
+    for u in stats['unreadable_folders']:
+        print(f"  unreadable, skipped: {u}")
     return stats
 
 

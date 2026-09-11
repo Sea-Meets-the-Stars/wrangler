@@ -37,7 +37,8 @@ def _fmt_fields(inv, ext):
 def main(args):
     from wrangler.ogcm import llc_v2
 
-    invs = llc_v2.inventory(args.out_dir, max_folders=args.max_folders)
+    unreadable = []
+    invs = llc_v2.inventory(args.out_dir, max_folders=args.max_folders, unreadable=unreadable)
     if not args.quiet:
         print(f"{'folder':42s} {'files':>5s}  iterations         shrunk: ...  data: ...")
         for inv in invs:
@@ -57,6 +58,10 @@ def main(args):
         print(f"   ({summ['first_with']:%Y-%m-%d %H:%M} to {summ['last_with']:%Y-%m-%d %H:%M})")
     else:
         print()
+    if unreadable:
+        print(f"unreadable (permission denied), skipped: {len(unreadable)}: "
+              f"{' '.join(os.path.basename(u) for u in unreadable)}")
+    summ['unreadable'] = [os.path.basename(u) for u in unreadable]
     if 0 < len(summ['without_field']) <= 12:
         print(f"folders lacking it: {' '.join(summ['without_field'])}")
     print("(field, ext) -> number of folders containing it:")
