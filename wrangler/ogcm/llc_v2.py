@@ -5,8 +5,9 @@ Two kinds of raw files matter (facts from Dan Whitt, 2026-09-09; see
 
 * **Uncompressed surface / 2D fields** -- ``SST/SSS/SSU/SSV.<iter>.data``
   (surface Theta/Salt/U/V) and the native 2D diagnostics (``Eta``, ...) are
-  plain MITgcm "compact" binaries, 4320 x 56160 big-endian real*4, i.e. the
-  native ``(13, 4320, 4320)`` facet layout.  `read_data_field` reads them and
+  plain MITgcm "compact" binaries, 4320 x 56160 big-endian real*4.
+  `read_data_field` reads them into the 13 true faces, ``(13, 4320, 4320)``
+  (see `compact_to_faces`: faces 7-12 need reordering), and
   `extract_surface` turns them into dbof-style Zarr stores.  This is the
   path used for the surface-field product.
 * **Compressed 3D fields** -- ``<field>.<iter>.shrunk`` + ``hFac*.bits``
@@ -42,9 +43,9 @@ Mask:  ``<maskDir>/hFacC.bits`` / ``hFacS.bits`` / ``hFacW.bits``
 Grid
 ----
 13 native LLC facets of FS x FS each (FS=4320 for full LLC4320
-resolution), flattened per level as 13*FS*FS points in facet-major,
-row-major order.  This module returns that native ``(13, FS, FS)`` layout
-directly -- no lat/lon "map" reprojection (that's what the MATLAB
+resolution), flattened per level as 13*FS*FS points in MITgcm compact
+(file) order.  This module returns the 13 true faces, ``(13, FS, FS)``,
+via `compact_to_faces` -- no lat/lon "map" reprojection (that's what the MATLAB
 toolbox's ``twodify``/'map' mode does) -- matching the ``face``/``j``/``i``
 convention already used for LLC4320 elsewhere in this codebase.
 """
@@ -67,6 +68,97 @@ FIELDS_2D = {
     'SIhsnow', 'SIuice', 'SIvice', 'oceFWflx', 'oceQnet',
     'oceQsw', 'oceSflux', 'oceTAUX', 'oceTAUY',
 }
+
+
+
+# ---------------------------------------------------------------------------
+# MITgcm "compact" order <-> true LLC faces
+# ---------------------------------------------------------------------------
+
+def compact_to_faces(a: np.ndarray, FS: int = None) -> np.ndarray:
+    """Reorder a field from MITgcm compact (on-disk) order to the 13 true LLC faces.
+
+    A compact file holds 5 facets back to back: facets 1-2 (faces 0-5) are
+    each ``(3*FS, FS)``, facet 3 (face 6, Arctic) is ``(FS, FS)``, and the
+    rotated facets 4-5 (faces 7-12) are each ``(FS, 3*FS)``.  Reshaping the
+    whole stream to ``(13, FS, FS)`` is right for faces 0-6 but scrambles
+    faces 7-12: each "face" would hold a third of the facet's rows, cut
+    into three interleaved column segments.  The true faces 7-9 (and 10-12)
+    are the three ``FS``-wide column blocks of the ``(FS, 3*FS)`` facet.
+    This is the xmitgcm / dbof convention, and the result matches
+    ``s3://dbof/LLC4320_RAW/SURFACE/grid.zarr`` XC/YC exactly (2026-10-02).
+
+    Args:
+        a (np.ndarray): ``13*FS*FS`` values in file order, flat or already
+            reshaped to ``(13, FS, FS)``.
+        FS (int, optional): facet side; inferred from *a* if omitted.
+
+    Returns:
+        np.ndarray: shape (13, FS, FS), faces in the true layout.
+    """
+    a = np.asarray(a)
+    if FS is None:
+        FS = int(round((a.size // N_FACETS) ** 0.5))
+    c = a.reshape(N_FACETS, FS, FS)
+    out = np.empty_like(c)
+    out[:7] = c[:7]
+    for f0 in (7, 10):
+        facet = c[f0:f0 + 3].reshape(FS, 3 * FS)
+        for k in range(3):
+            out[f0 + k] = facet[:, k * FS:(k + 1) * FS]
+    return out
+
+
+# Group attribute marking stores written with true faces (`compact_to_faces`).
+# Stores written before 2026-10-02 lack it: their faces 7-12 are in compact
+# order and must be passed through `compact_to_faces` (see `stored_faces`).
+FACE_LAYOUT = 'llc_faces'
+
+
+def stored_faces(group, var: str) -> np.ndarray:
+    """Read *var* (13, FS, FS) from a store, fixing faces 7-12 for legacy stores.
+
+    Args:
+        group (zarr.Group): an hourly store or ``grid.zarr``.
+        var (str): a (face, j, i) variable, e.g. 'Theta' or 'XC'.
+
+    Returns:
+        np.ndarray: (13, FS, FS) in the true face layout.
+    """
+    arr = group[var][:]
+    if group.attrs.get('face_layout') == FACE_LAYOUT:
+        return arr
+    return compact_to_faces(arr)
+
+
+def face_index_to_compact(face: int, j: int, i: int, FS: int):
+    """(face, j, i) in the true layout -> its (face, j, i) in compact order."""
+    if face < 7:
+        return face, j, i
+    f0 = 7 if face < 10 else 10
+    r = j * 3 * FS + (face - f0) * FS + i
+    return f0 + r // (FS * FS), (r % (FS * FS)) // FS, r % FS
+
+
+def compact_index_to_face(face: int, j: int, i: int, FS: int):
+    """(face, j, i) in compact order -> its (face, j, i) in the true layout."""
+    if face < 7:
+        return face, j, i
+    f0 = 7 if face < 10 else 10
+    r = (face - f0) * FS * FS + j * FS + i
+    row, col = divmod(r, 3 * FS)
+    return f0 + col // FS, row, col % FS
+
+
+def faces_to_compact(faces: np.ndarray) -> np.ndarray:
+    """Inverse of `compact_to_faces`: true faces -> file-order (13, FS, FS)."""
+    faces = np.asarray(faces)
+    FS = faces.shape[-1]
+    out = np.empty_like(faces)
+    out[:7] = faces[:7]
+    for f0 in (7, 10):
+        out[f0:f0 + 3] = np.concatenate(list(faces[f0:f0 + 3]), axis=1).reshape(3, FS, FS)
+    return out
 
 
 def mask_file_for_field(field_name: str) -> str:
@@ -232,7 +324,7 @@ def decompress_level(shrunk_file: str, mask: np.ndarray, byte_offset: int = 0,
 
     flat = np.full(mask.size, dry_value, dtype=np.float32)
     flat[mask] = values
-    return flat.reshape(N_FACETS, FS, FS)
+    return compact_to_faces(flat, FS)
 
 
 def read_shrunk_field(data_dir: str, mask_dir: str, field_name: str,
@@ -335,7 +427,7 @@ def read_data_field(data_file: str, FS: int, level: int = 0,
     with open(data_file, 'rb') as f:
         f.seek(level * nbytes_level)
         raw = f.read(nbytes_level)
-    return np.frombuffer(raw, dtype=dtype).astype(np.float32).reshape(N_FACETS, FS, FS)
+    return compact_to_faces(np.frombuffer(raw, dtype=dtype).astype(np.float32), FS)
 
 
 NAMELIST_KEYS = ('deltaT', 'nIter0', 'startTime', 'nTimeSteps', 'endTime',
@@ -1092,7 +1184,7 @@ def surface_wet_mask(mask_dir: str, var_name: str, FS: int) -> np.ndarray:
     (`mask_file_for_field`).
     """
     mask_file = os.path.join(mask_dir, mask_file_for_field(var_name))
-    return read_mask_level(mask_file, FS, level=0).reshape(N_FACETS, FS, FS)
+    return compact_to_faces(read_mask_level(mask_file, FS, level=0), FS)
 
 
 def apply_land_mask(field: np.ndarray, wet: np.ndarray = None, prefix: str = None) -> np.ndarray:
@@ -1181,6 +1273,7 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
     level_bytes = N_FACETS * FS * FS * 4
     root = open_zarr_group(url, mode='w', endpoint=endpoint, profile=profile)
     root.attrs.update({'model': 'LLC4320_v2', 'FS': FS, 'complete': False,
+                       'face_layout': FACE_LAYOUT,
                        'grid_dir': grid_dir or '', 'mask_dir': mask_dir or '',
                        'description': 'Static grid information for LLC4320 v2 '
                                       'surface output (see wrangler.ogcm.llc_v2)'})
@@ -1249,7 +1342,7 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
     wet = None
     if mask_dir is not None:
         try:
-            wet = read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, 0).reshape(N_FACETS, FS, FS)
+            wet = compact_to_faces(read_mask_level(os.path.join(mask_dir, 'hFacC.bits'), FS, 0), FS)
             mask_src = 'hFacC.bits'
         except OSError as e:
             skipped.append(f"hFacC.bits ({e.strerror}); falling back for maskC")
@@ -1305,6 +1398,7 @@ def write_timestep_store(dest: str, step: Timestep, fields: dict, complete: bool
         'source_folder': os.path.basename(step.folder),
         'FS': int(any_arr.shape[1]),
         'variables': sorted(fields),
+        'face_layout': FACE_LAYOUT,
         'complete': False,
     })
     for var, (arr, attrs) in fields.items():

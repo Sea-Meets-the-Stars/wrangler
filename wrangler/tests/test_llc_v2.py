@@ -17,6 +17,49 @@ from wrangler.ogcm import llc_v2
 FS = 8  # facet side; must be divisible by 8. Small so tests are fast.
 
 
+def _file_order(faces):
+    """Flatten a (13, FS, FS) true-face array back to on-disk (compact) order."""
+    return llc_v2.faces_to_compact(np.asarray(faces)).reshape(-1)
+
+
+def test_compact_to_faces():
+    """Faces 0-6 are plain blocks; faces 7-12 are column blocks of (FS, 3FS) facets."""
+    flat = np.arange(13 * FS * FS, dtype=np.float32)
+    faces = llc_v2.compact_to_faces(flat, FS)
+    assert faces.shape == (13, FS, FS)
+    np.testing.assert_array_equal(faces[:7], flat[:7 * FS * FS].reshape(7, FS, FS))
+    for f0 in (7, 10):
+        facet = flat[f0 * FS * FS:(f0 + 3) * FS * FS].reshape(FS, 3 * FS)
+        for k in range(3):
+            np.testing.assert_array_equal(faces[f0 + k], facet[:, k * FS:(k + 1) * FS])
+    # rows of a true face are contiguous slices of the facet, not interleaved
+    assert faces[7, 1, 0] - faces[7, 0, 0] == 3 * FS
+    np.testing.assert_array_equal(_file_order(faces), flat)
+    np.testing.assert_array_equal(llc_v2.compact_to_faces(flat.reshape(13, FS, FS)), faces)
+
+
+def test_face_index_conversions():
+    flat = np.arange(13 * FS * FS).reshape(13, FS, FS)
+    faces = llc_v2.compact_to_faces(flat)
+    for idx in [(0, 1, 2), (6, 7, 7), (7, 0, 5), (8, 3, 1), (9, 7, 7), (11, 2, 6), (12, 5, 0)]:
+        c = llc_v2.face_index_to_compact(*idx, FS)
+        assert flat[c] == faces[idx]
+        assert llc_v2.compact_index_to_face(*c, FS) == idx
+
+
+def test_stored_faces_legacy_and_new():
+    flat = np.arange(13 * FS * FS, dtype=np.float32).reshape(13, FS, FS)
+
+    class G(dict):
+        def __init__(self, arr, attrs):
+            super().__init__(v=arr)
+            self.attrs = attrs
+    faces = llc_v2.compact_to_faces(flat)
+    np.testing.assert_array_equal(llc_v2.stored_faces(G(flat, {}), 'v'), faces)
+    np.testing.assert_array_equal(
+        llc_v2.stored_faces(G(faces, {'face_layout': llc_v2.FACE_LAYOUT}), 'v'), faces)
+
+
 def _write_level(tmp_path, name_prefix, mask_bits, values, mode='wb'):
     """Write one level's mask bits and packed big-endian float32 values.
 
@@ -68,8 +111,8 @@ def test_read_mask_level_and_decompress_roundtrip(tmp_path):
     # Decompressed field: wet points match input values, dry points are 0.
     field = llc_v2.decompress_level(shrunk_file, mask, byte_offset=0)
     assert field.shape == (13, FS, FS)
-    np.testing.assert_allclose(field.reshape(-1)[mask], values, rtol=1e-6)
-    assert np.all(field.reshape(-1)[~mask] == 0.0)
+    np.testing.assert_allclose(_file_order(field)[mask], values, rtol=1e-6)
+    assert np.all(_file_order(field)[~mask] == 0.0)
 
 
 def test_detect_nz_and_multi_level_offsets(tmp_path):
@@ -102,7 +145,7 @@ def test_detect_nz_and_multi_level_offsets(tmp_path):
 
         field = llc_v2.decompress_level(str(shrunk_file), mask, byte_offset=expected_offset)
         np.testing.assert_allclose(
-            field.reshape(-1)[mask], all_values[lev], rtol=1e-6)
+            _file_order(field)[mask], all_values[lev], rtol=1e-6)
 
 
 def test_read_shrunk_field_and_read_sst(tmp_path):
@@ -125,7 +168,7 @@ def test_read_shrunk_field_and_read_sst(tmp_path):
     field = llc_v2.read_shrunk_field(str(data_dir), str(mask_dir), 'Theta',
                                      21240, FS, level=0)
     assert field.shape == (13, FS, FS)
-    np.testing.assert_allclose(field.reshape(-1)[mask_bits], sst_values, rtol=1e-6)
+    np.testing.assert_allclose(_file_order(field)[mask_bits], sst_values, rtol=1e-6)
 
     # read_sst is the same thing for Theta/k=0.
     sst = llc_v2.read_sst(str(data_dir), str(mask_dir), 21240, FS=FS)
@@ -306,7 +349,7 @@ def test_decompress_dry_value(tmp_path):
     values = rng.uniform(0, 1, size=int(mask_bits.sum())).astype(np.float32)
     _, shrunk_file = _write_level(tmp_path, 'lvl', mask_bits, values)
     field = llc_v2.decompress_level(shrunk_file, mask_bits, dry_value=np.nan)
-    flat = field.reshape(-1)
+    flat = _file_order(field)
     assert np.all(np.isnan(flat[~mask_bits]))
     np.testing.assert_allclose(flat[mask_bits], values, rtol=1e-6)
 
@@ -338,7 +381,7 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
 
     # grid.zarr from the mask dir alone: maskC only.
     g = zarr.open_group(str(dest / 'grid.zarr'), mode='r', use_consolidated=False)
-    np.testing.assert_array_equal(g['maskC'][:].reshape(-1), wet)
+    np.testing.assert_array_equal(_file_order(g['maskC'][:]), wet)
     assert g.attrs['complete'] is True and g.attrs['variables'] == ['maskC']
 
     # One hourly store: dims/chunks/attrs/values, NaN over land, both variables.
@@ -355,10 +398,11 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
     assert g.attrs['source_folder'] == SEG2[0]
     assert g.attrs['variables'] == ['Salt', 'Theta']
     assert g.attrs['complete'] is True
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
     assert z.attrs['units'] == 'degC' and z.attrs['source_file_prefix'] == 'SST'
     assert z.attrs['source_file'] == f'SST.{s.iteration:010d}.data'
     for var, prefix in (('Theta', 'SST'), ('Salt', 'SSS')):
-        flat = g[var][:].reshape(-1)
+        flat = _file_order(g[var][:])
         np.testing.assert_allclose(flat[wet], truth[s.iteration][prefix][wet], rtol=1e-6)
         assert np.all(np.isnan(flat[~wet]))
     np.testing.assert_array_equal(g['face'][:], np.arange(13))
@@ -434,11 +478,11 @@ def test_write_grid_store_from_grid_dir(tmp_path):
     assert any(s.startswith('YC.data (size') for s in g.attrs['skipped'])
     assert any(s == 'XG.data (missing)' for s in g.attrs['skipped'])
     assert g.attrs['complete'] is True
-    np.testing.assert_array_equal(g['Depth'][:].reshape(-1), depth)
-    np.testing.assert_array_equal(g['XC'][:].reshape(-1), xc)
+    np.testing.assert_array_equal(_file_order(g['Depth'][:]), depth)
+    np.testing.assert_array_equal(_file_order(g['XC'][:]), xc)
     assert g['rA'].attrs['source_file'] == 'RAC.data'
     assert g['hFacC_k0'].attrs['levels_in_file'] == 3
-    np.testing.assert_array_equal(g['maskC'][:].reshape(-1), depth > 0)
+    np.testing.assert_array_equal(_file_order(g['maskC'][:]), depth > 0)
     assert g['maskC'].attrs['source'] == 'hFacC.data level 0 > 0'
     assert g['RC'].shape == (3,) and tuple(g['RC'].metadata.dimension_names) == ('k',)
     assert g['RF'].shape == (4,) and tuple(g['RF'].metadata.dimension_names) == ('k_p1',)
@@ -507,7 +551,7 @@ def _write_eta(path, FS, wet, rng):
     eta[wet & (eta == 0)] = 0.1
     with open(path, 'wb') as f:
         f.write(eta.astype('>f4').tobytes())
-    return eta.reshape(13, FS, FS)
+    return llc_v2.compact_to_faces(eta, FS)
 
 
 def test_read_data_field(tmp_path):
