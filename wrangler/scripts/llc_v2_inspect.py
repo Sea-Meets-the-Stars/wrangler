@@ -81,7 +81,9 @@ def main(args):
     z = root[args.var]
     print(f"{args.var}: shape={z.shape} chunks={z.chunks} dtype={z.dtype} "
           f"dims={tuple(z.metadata.dimension_names)} attrs={dict(z.attrs)}")
-    field = z[:]
+    # stores written before 2026-10-02 hold faces 7-12 in compact order
+    field = llc_v2.stored_faces(root, args.var)
+    print(f"face layout: {root.attrs.get('face_layout', 'compact (legacy; fixed on read)')}")
 
     print(f"\n{'face':>4} {'n_wet':>10} {'wet_frac':>8} {'min':>9} {'max':>9} {'mean':>9}")
     for f, n, frac, mn, mx, mean in face_stats(field):

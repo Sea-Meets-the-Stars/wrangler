@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Repair faces 7-12 of LLC4320 v2 stores written before the 2026-10-02 face-order fix
+"""
+
+from wrangler.scripts import llc_v2_fix_faces
+
+if __name__ == '__main__':
+    args = llc_v2_fix_faces.parser()
+    llc_v2_fix_faces.main(args)

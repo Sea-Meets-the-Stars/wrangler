@@ -827,3 +827,132 @@ def test_permission_errors_are_skipped(tmp_path, caplog):
     g = zarr.open_group(url, mode='r', use_consolidated=False)
     assert g.attrs['variables'] == ['Depth', 'maskC']
     assert any(s.startswith('XC.data (Permission denied') for s in g.attrs['skipped'])
+
+
+# ---------------------------------------------------------------------------
+# Repairing stores written before the face-order fix
+# ---------------------------------------------------------------------------
+
+def _make_legacy(store):
+    """Turn a correctly written store into what the pre-fix code wrote."""
+    import zarr
+    g = zarr.open_group(store, mode='a')
+    for v in llc_v2._face_variables(g, FS):
+        z = g[v]
+        z[7:13] = llc_v2._faces_to_facets(z[7:13])
+        z.attrs.pop('face_layout', None)
+    g.attrs.pop('face_layout', None)
+
+
+def test_facet_helpers_match_compact_to_faces():
+    flat = np.arange(13 * FS * FS, dtype=np.float32).reshape(13, FS, FS)
+    np.testing.assert_array_equal(llc_v2._facets_to_faces(flat[7:]),
+                                  llc_v2.compact_to_faces(flat)[7:])
+    np.testing.assert_array_equal(llc_v2._faces_to_facets(llc_v2._facets_to_faces(flat[7:])),
+                                  flat[7:])
+
+
+def test_repair_store_faces(tmp_path):
+    zarr = pytest.importorskip('zarr')
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir, FS=FS, limit=3)
+    stores = [str(dest / f'20230101T0{h}.zarr') for h in (1, 2, 3)]
+    good = {s: zarr.open_group(s, mode='r')['Theta'][:] for s in stores}
+    masks = llc_v2.wet_masks_for_repair(str(dest / 'grid.zarr'))
+    backups = tmp_path / 'bk'
+
+    # a correctly written store: nothing to do
+    assert llc_v2.repair_store_faces(stores[0], masks) == 'already'
+
+    for s in stores:
+        _make_legacy(s)
+    legacy = zarr.open_group(stores[0], mode='r')['Theta'][:]
+    assert not np.array_equal(legacy, good[stores[0]], equal_nan=True)
+    # the reader already sees through it
+    np.testing.assert_array_equal(llc_v2.stored_faces(zarr.open_group(stores[0], mode='r'), 'Theta'),
+                                  good[stores[0]])
+
+    # dry run: classified, nothing written
+    assert llc_v2.repair_store_faces(stores[0], masks, dry_run=True) == 'would-repair'
+    np.testing.assert_array_equal(zarr.open_group(stores[0], mode='r')['Theta'][:], legacy)
+
+    # repair, then idempotent
+    assert llc_v2.repair_store_faces(stores[0], masks, backup_dir=str(backups)) == 'repaired'
+    g = zarr.open_group(stores[0], mode='r')
+    np.testing.assert_array_equal(g['Theta'][:], good[stores[0]])
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT and g.attrs['complete'] is True
+    assert llc_v2.repair_store_faces(stores[0], masks) == 'already'
+    assert not os.listdir(backups)
+
+    # interrupted run: the faces were half rewritten, the backup holds the originals
+    import zarr as _z
+    gz = _z.open_group(stores[1], mode='a')
+    np.save(backups / f'{os.path.basename(stores[1])}.Theta.npy', gz['Theta'][7:13])
+    half = gz['Theta'][7:13]
+    half[:3] = llc_v2._facets_to_faces(half)[:3]
+    gz['Theta'][7:13] = half
+    assert llc_v2.classify_face_layout(half, masks['maskC']) == llc_v2.UNKNOWN
+    assert llc_v2.repair_store_faces(stores[1], masks, backup_dir=str(backups)) == 'repaired'
+    np.testing.assert_array_equal(_z.open_group(stores[1], mode='r')['Theta'][:], good[stores[1]])
+    assert not os.listdir(backups)
+
+    # data already in true order but unmarked: only the attribute is added (never permuted twice)
+    gz = _z.open_group(stores[2], mode='a')
+    gz['Theta'][7:13] = good[stores[2]][7:13]
+    assert llc_v2.repair_store_faces(stores[2], masks) == 'marked'
+    np.testing.assert_array_equal(_z.open_group(stores[2], mode='r')['Theta'][:], good[stores[2]])
+
+    # an unrecognisable NaN pattern is left alone
+    s4 = str(tmp_path / 'odd.zarr')
+    root = _z.open_group(s4, mode='w')
+    root.attrs.update({'FS': FS, 'variables': ['Theta'], 'selected_iteration': 1})
+    a = root.create_array('Theta', shape=(13, FS, FS), chunks=(1, FS, FS), dtype='f4',
+                          fill_value=np.nan)
+    rnd = np.random.default_rng(1).random((13, FS, FS)).astype(np.float32)
+    rnd[rnd < 0.4] = np.nan
+    a[:] = rnd
+    assert llc_v2.repair_store_faces(s4, masks).startswith('unknown')
+    np.testing.assert_array_equal(a[:], rnd)
+
+
+def test_repair_grid_store(tmp_path):
+    zarr = pytest.importorskip('zarr')
+    j = np.arange(FS, dtype=np.float32)[:, None]
+    i = np.arange(FS, dtype=np.float32)[None, :]
+    yc = np.stack([np.broadcast_to(10.0 * f + 0.02 * j + 0.001 * i, (FS, FS)) for f in range(13)])
+    mask = np.random.default_rng(2).random((13, FS, FS)) < 0.6
+    url = str(tmp_path / 'grid.zarr')
+    g = zarr.open_group(url, mode='w')
+    g.attrs.update({'FS': FS, 'variables': ['YC', 'maskC', 'RC']})
+    for name, arr in (('YC', yc), ('maskC', mask)):
+        z = g.create_array(name, shape=arr.shape, chunks=(1, FS, FS), dtype=arr.dtype)
+        z[:] = arr
+    g.create_array('RC', shape=(5,), dtype='f4')[:] = np.arange(5)
+    _make_legacy(url)
+    assert llc_v2.classify_face_layout(g['YC'][7:13], yc_7_12=g['YC'][7:13]) == llc_v2.LEGACY
+    assert llc_v2.repair_store_faces(url, backup_dir=str(tmp_path / 'bk')) == 'repaired'
+    g = zarr.open_group(url, mode='r')
+    np.testing.assert_array_equal(g['YC'][:], yc)
+    np.testing.assert_array_equal(g['maskC'][:], mask)
+    assert llc_v2.classify_face_layout(g['YC'][7:13], yc_7_12=g['YC'][7:13]) == llc_v2.FIXED
+    assert llc_v2.repair_store_faces(url) == 'already'
+
+
+def test_fix_faces_cli(tmp_path, capsys):
+    pytest.importorskip('zarr')
+    from wrangler.scripts import llc_v2_fix_faces
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir, FS=FS)
+    for name in os.listdir(dest):
+        if name[:8].isdigit():
+            _make_legacy(str(dest / name))
+    common = [str(dest), '--backup-dir', str(tmp_path / 'bk')]
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--dry-run']))
+    assert counts == {'would-repair': 5}
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--limit', '2', '--workers', '2']))
+    assert counts == {'repaired': 2}
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--start', '20230101T02']))
+    assert counts == {'already': 1, 'repaired': 3}
+    assert 'grid.zarr: already' in capsys.readouterr().out

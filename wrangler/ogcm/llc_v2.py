@@ -1523,3 +1523,207 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
 def extract_sst(out_dir: str, dest: str, mask_dir: str = None, **kwargs) -> dict:
     """SST-only convenience wrapper around `extract_surface` (fields=['SST'])."""
     return extract_surface(out_dir, dest, fields=['SST'], mask_dir=mask_dir, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Repairing stores written before the face-order fix (2026-10-02)
+# ---------------------------------------------------------------------------
+#
+# Stores written before `compact_to_faces` existed hold faces 7-12 in compact
+# order (each stored "face" interleaves rows of a rotated facet).  The values
+# are only permuted, so they can be fixed in place: read faces 7-12, apply
+# `compact_to_faces`, write them back, verify, then set ``face_layout``.
+# Applying the permutation twice would scramble a store again, so the layout
+# is first *inferred from the data* (`classify_face_layout`) rather than taken
+# from the missing attribute alone, and the original faces are kept in a local
+# backup file until the rewrite is verified.
+
+LEGACY, FIXED, UNKNOWN = 'compact', FACE_LAYOUT, 'unknown'
+
+# Which k=0 wet mask in grid.zarr gives a variable's NaN (land) pattern.
+_WET_MASK_SOURCE = {'U': 'hFacW_k0', 'V': 'hFacS_k0'}
+
+
+def _facets_to_faces(stored_7_12: np.ndarray) -> np.ndarray:
+    """Compact-order faces 7-12 (6, FS, FS) -> true faces 7-12."""
+    FS = stored_7_12.shape[-1]
+    out = np.empty_like(stored_7_12)
+    for f0 in (0, 3):
+        facet = stored_7_12[f0:f0 + 3].reshape(FS, 3 * FS)
+        for k in range(3):
+            out[f0 + k] = facet[:, k * FS:(k + 1) * FS]
+    return out
+
+
+def _faces_to_facets(faces_7_12: np.ndarray) -> np.ndarray:
+    """Inverse of `_facets_to_faces`."""
+    FS = faces_7_12.shape[-1]
+    out = np.empty_like(faces_7_12)
+    for f0 in (0, 3):
+        out[f0:f0 + 3] = np.concatenate(list(faces_7_12[f0:f0 + 3]), axis=1).reshape(3, FS, FS)
+    return out
+
+
+def classify_face_layout(stored_7_12: np.ndarray, wet_7_12: np.ndarray = None,
+                         yc_7_12: np.ndarray = None, tol: float = 1e-6) -> str:
+    """Infer whether faces 7-12 of a store are in compact or true-face order.
+
+    Two independent tests, whichever input is given:
+
+    * *wet_7_12* (true layout, bool): the NaN pattern of a land-masked field
+      equals ``~wet`` exactly in its own layout, so it identifies the layout.
+    * *yc_7_12* (the same store's YC): neighbouring rows are ~0.02 deg apart
+      in true order but tens of degrees apart in compact order.
+
+    Returns:
+        str: `LEGACY` ('compact'), `FIXED` ('llc_faces') or `UNKNOWN` (e.g.
+            a store left half-rewritten -- never repaired automatically).
+    """
+    if wet_7_12 is not None:
+        land = np.isnan(stored_7_12)
+        if not land.any():
+            return UNKNOWN                      # no land to tell the layouts apart
+        n = land.size
+        if np.count_nonzero(land != ~wet_7_12) <= tol * n:
+            return FIXED
+        if np.count_nonzero(land != ~_faces_to_facets(wet_7_12)) <= tol * n:
+            return LEGACY
+        return UNKNOWN
+    if yc_7_12 is not None:
+        # median latitude step between neighbouring rows (j) and columns (i)
+        dj = float(np.nanmedian(np.abs(np.diff(yc_7_12[:, :, ::97], axis=1))))
+        di = float(np.nanmedian(np.abs(np.diff(yc_7_12[:, ::97, :], axis=2))))
+        if dj > 1.0 and di < 0.5:
+            return LEGACY
+        if dj < 0.5 and di < 0.5:
+            return FIXED
+        return UNKNOWN
+    raise ValueError("classify_face_layout needs wet_7_12 or yc_7_12")
+
+
+def _face_variables(root, FS: int):
+    """Names of (13, FS, FS) arrays in a store (attrs-driven: keys() is unreliable on s3fs)."""
+    names = root.attrs.get('variables') or []
+    out = []
+    for name in names:
+        try:
+            z = root[name]
+        except KeyError:
+            continue
+        if tuple(z.shape) == (N_FACETS, FS, FS):
+            out.append(name)
+    return out
+
+
+def wet_masks_for_repair(grid_url: str, names=('maskC',), endpoint: str = None,
+                         profile: str = None) -> dict:
+    """True-layout k=0 wet masks for faces 7-12, keyed by mask name, from grid.zarr.
+
+    Works whether or not grid.zarr itself has been repaired (`stored_faces`).
+
+    Args:
+        names (iterable of str): 'maskC' (C points: Theta, Salt, Eta, ...),
+            'hFacW_k0' (U), 'hFacS_k0' (V). Defaults to ('maskC',).
+    """
+    g = open_zarr_group(grid_url, mode='r', endpoint=endpoint, profile=profile)
+    return {n: stored_faces(g, n)[7:] > 0 for n in names}
+
+
+def repair_store_faces(store_url: str, wet_masks: dict = None, backup_dir: str = None,
+                       dry_run: bool = False, endpoint: str = None,
+                       profile: str = None) -> str:
+    """Rewrite faces 7-12 of one store from compact to true-face order, in place.
+
+    Works one (13, FS, FS) variable at a time (grid.zarr has 23 of them):
+
+    1. skip it if its array already carries ``face_layout``;
+    2. read faces 7-12, or reload them from a backup left by an interrupted
+       run (``<backup_dir>/<store>.<var>.npy``);
+    3. check they really are in compact order -- for hourly stores from the
+       NaN pattern against the true-layout land mask (`classify_face_layout`),
+       for grid.zarr from the continuity of its YC;
+    4. save the backup, write the permuted faces, read them back and compare,
+       mark the array, delete the backup.
+
+    The group gets ``face_layout`` only when every variable is done, so an
+    interrupted store is simply finished by the next run.
+
+    Args:
+        store_url (str): local path or ``s3://`` URL of an hourly store or grid.zarr.
+        wet_masks (dict, optional): from `wet_masks_for_repair`; required for
+            hourly stores, ignored for grid.zarr.
+        backup_dir (str, optional): local directory for backups of the
+            variable being rewritten (~0.45 GB each). Without it nothing is
+            backed up.
+        dry_run (bool, optional): classify only; write nothing.
+
+    Returns:
+        str: 'already' (group attribute set), 'repaired', 'would-repair' (dry
+            run), 'marked' (data were already in true order; only attributes
+            added), or 'unknown: <vars>' (those variables left untouched).
+    """
+    root = open_zarr_group(store_url, mode='r' if dry_run else 'a', endpoint=endpoint,
+                           profile=profile)
+    if root.attrs.get('face_layout') == FACE_LAYOUT:
+        return 'already'
+    FS = int(root.attrs.get('FS', 4320))
+    is_grid = 'selected_iteration' not in root.attrs
+    names = _face_variables(root, FS)
+    if not names:
+        return 'unknown: no (13, FS, FS) variables'
+    if not is_grid and wet_masks is None:
+        raise ValueError("wet_masks is required to repair hourly stores")
+
+    grid_layout = None
+    if is_grid:
+        yc = root['YC']
+        if yc.attrs.get('face_layout') == FACE_LAYOUT:
+            grid_layout = LEGACY        # YC done by an interrupted run; the rest are as written
+        else:                           # YC's own row-to-row continuity tells its layout
+            yc7 = yc[7:N_FACETS]
+            grid_layout = classify_face_layout(yc7, yc_7_12=yc7)
+
+    store = os.path.basename(str(store_url).rstrip('/'))
+    done, unknown, would = [], [], []
+    for v in names:
+        z = root[v]
+        if z.attrs.get('face_layout') == FACE_LAYOUT:
+            continue
+        backup = os.path.join(backup_dir, f'{store}.{v}.npy') if backup_dir else None
+        if backup and os.path.exists(backup):
+            arr, layout = np.load(backup), LEGACY        # originals from an interrupted run
+        elif is_grid:
+            layout = grid_layout
+            arr = z[7:N_FACETS] if (layout == LEGACY and not dry_run) else None
+        else:
+            arr = z[7:N_FACETS]
+            layout = classify_face_layout(arr, wet_masks[_WET_MASK_SOURCE.get(v, 'maskC')])
+        if layout == UNKNOWN:
+            unknown.append(v)
+            continue
+        if dry_run:
+            if layout == LEGACY:
+                would.append(v)
+            continue
+        if layout == LEGACY:
+            if backup and not os.path.exists(backup):
+                os.makedirs(backup_dir, exist_ok=True)
+                tmp = backup + '.tmp.npy'
+                np.save(tmp, arr)
+                os.replace(tmp, backup)
+            fixed = _facets_to_faces(arr)
+            z[7:N_FACETS] = fixed
+            if not np.array_equal(z[7:N_FACETS], fixed, equal_nan=True):
+                raise IOError(f"{store_url}:{v}: read-back after repair does not match "
+                              f"(backup kept at {backup})")
+            done.append(v)
+        z.attrs['face_layout'] = FACE_LAYOUT
+        if backup and os.path.exists(backup):
+            os.remove(backup)
+
+    if unknown:
+        return f"unknown: {','.join(unknown)}"
+    if dry_run:
+        return 'would-repair' if would else 'marked'
+    root.attrs['face_layout'] = FACE_LAYOUT
+    return 'repaired' if done else 'marked'
