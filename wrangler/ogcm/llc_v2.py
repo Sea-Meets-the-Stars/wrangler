@@ -1265,8 +1265,20 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
     """
     url = f"{str(dest).rstrip('/')}/{GRID_STORE_NAME}"
     if skip_existing and store_is_complete(url, 'maskC', endpoint, profile):
-        logger.info("grid store complete, skipping: %s", url)
-        return url
+        # Complete is not enough: a grid store written before the face-layout
+        # fix holds faces 7-12 in compact order, so it must be rebuilt rather
+        # than skipped.  (The hourly stores are deliberately *not* rebuilt
+        # here -- `repair_store_faces` fixes those in place far more cheaply
+        # than re-extracting them.)
+        try:
+            g = open_zarr_group(url, mode='r', endpoint=endpoint, profile=profile)
+            current = g.attrs.get('face_layout') == FACE_LAYOUT
+        except Exception:
+            current = False
+        if current:
+            logger.info("grid store complete, skipping: %s", url)
+            return url
+        logger.info("grid store predates the face-layout fix; rebuilding: %s", url)
     if grid_dir is None and mask_dir is None:
         raise ValueError("write_grid_store needs grid_dir and/or mask_dir")
 

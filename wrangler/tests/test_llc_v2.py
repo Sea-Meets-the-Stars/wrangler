@@ -956,3 +956,38 @@ def test_fix_faces_cli(tmp_path, capsys):
     counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--start', '20230101T02']))
     assert counts == {'already': 1, 'repaired': 3}
     assert 'grid.zarr: already' in capsys.readouterr().out
+
+
+def test_write_grid_store_rebuilds_legacy_layout(tmp_path, caplog):
+    """A complete grid.zarr lacking face_layout must be rebuilt, not skipped."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(31)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    depth = np.where(rng.random(n) < 0.7, rng.uniform(10, 5000, n), 0.0).astype(np.float32)
+    _write_data(grid_dir / 'Depth.data', depth)
+    dest = tmp_path / 'dest'
+
+    url = llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
+
+    # A current store is skipped.
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    assert 'complete, skipping' in caplog.text
+
+    # Strip the attribute to mimic a store written before the fix: it must be
+    # rebuilt, and come back with the attribute and the right values.
+    caplog.clear()
+    g = zarr.open_group(url, mode='a', use_consolidated=False)
+    del g.attrs['face_layout']
+    g['Depth'][:] = 0.0                      # prove it really was rewritten
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    assert 'predates the face-layout fix; rebuilding' in caplog.text
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
+    np.testing.assert_array_equal(llc_v2.stored_faces(g, 'Depth'),
+                                  llc_v2.compact_to_faces(depth.reshape(13, FS, FS)))
