@@ -55,6 +55,10 @@ def parser(options=None):
     p.add_argument('--no-skip-existing', action='store_true',
                    help='rewrite stores even if already complete')
     p.add_argument('--no-grid', action='store_true', help='do not write grid.zarr')
+    p.add_argument('--max-retries', type=int, default=4,
+                   help='attempts per store before skipping it and carrying on (default 4)')
+    p.add_argument('--retry-wait', type=float, default=10.0,
+                   help='seconds before the first retry, doubling each attempt (default 10)')
     p.add_argument('--endpoint', help='S3 endpoint (default $ENDPOINT_URL or Nautilus west)')
     p.add_argument('--profile', help='AWS credentials profile (default $AWS_PROFILE)')
     p.add_argument('-v', '--verbose', action='store_true')
@@ -69,9 +73,11 @@ def main(args):
         args.out_dir, args.dest, fields=args.fields, mask_dir=args.mask_dir,
         grid_dir=args.grid_dir, FS=args.FS, start=args.start, end=args.end,
         limit=args.limit, skip_existing=not args.no_skip_existing, dry_run=args.dry_run,
-        write_grid=not args.no_grid, endpoint=args.endpoint, profile=args.profile)
+        write_grid=not args.no_grid, endpoint=args.endpoint, profile=args.profile,
+        max_retries=args.max_retries, retry_wait=args.retry_wait)
     print(f"discovered={stats['discovered']} written={stats['written']} "
           f"skipped={stats['skipped']} incomplete={stats['incomplete']} "
+          f"failed={stats['failed']} "
           f"unreadable_folders={len(stats['unreadable_folders'])} "
           f"model_dt_s={stats['dt_seconds']}")
     for u in stats['unreadable_folders']:

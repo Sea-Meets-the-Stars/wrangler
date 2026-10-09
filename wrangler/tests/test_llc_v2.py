@@ -373,7 +373,7 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
     stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'],
                                    mask_dir=mask_dir, FS=FS)
     assert stats == {'discovered': 5, 'written': 5, 'skipped': 0, 'incomplete': 0,
-                     'dt_seconds': [5.0, 10.0], 'unreadable_folders': []}
+                     'failed': 0, 'dt_seconds': [5.0, 10.0], 'unreadable_folders': []}
 
     names = sorted(p.name for p in dest.iterdir())
     assert names == ['20230101T01.zarr', '20230101T02.zarr', '20230101T03.zarr',
@@ -442,7 +442,7 @@ def test_extract_surface_end_to_end_local(tmp_path, caplog):
         stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'dest3'), fields=['SST', 'SSU'],
                                        FS=FS, limit=1, write_grid=False)
     assert stats == {'discovered': 1, 'written': 0, 'skipped': 0, 'incomplete': 1,
-                     'dt_seconds': [], 'unreadable_folders': []}
+                     'failed': 0, 'dt_seconds': [], 'unreadable_folders': []}
     g3 = zarr.open_group(str(tmp_path / 'dest3' / '20230101T01.zarr'), mode='r',
                          use_consolidated=False)
     assert g3.attrs['complete'] is False and g3.attrs['variables'] == ['Theta']
@@ -991,3 +991,58 @@ def test_write_grid_store_rebuilds_legacy_layout(tmp_path, caplog):
     assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
     np.testing.assert_array_equal(llc_v2.stored_faces(g, 'Depth'),
                                   llc_v2.compact_to_faces(depth.reshape(13, FS, FS)))
+
+
+def test_write_failure_is_not_fatal(tmp_path, monkeypatch, caplog):
+    """A failing store write is retried, then skipped -- the run must not abort."""
+    pytest.importorskip('zarr')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    real = llc_v2.write_timestep_store
+    calls = {'n': 0}
+
+    def flaky(dest_, step, fields, **kw):
+        calls['n'] += 1
+        if step.store_name == '20230101T02.zarr':      # this one always fails
+            raise PermissionError(None)
+        return real(dest_, step, fields, **kw)
+
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', flaky)
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], FS=FS,
+                                   write_grid=False, max_retries=3, retry_wait=0)
+    # Four of five stores written; the bad one counted as failed, not fatal.
+    assert stats['written'] == 4 and stats['failed'] == 1
+    assert sorted(p.name for p in dest.iterdir()) == [
+        '20230101T01.zarr', '20230101T03.zarr', '20230101T04.zarr', '20230101T05.zarr']
+    assert 'retry 1/2' in caplog.text and 'retry 2/2' in caplog.text
+    assert 'failed after 3 attempts' in caplog.text
+    assert '1 store(s) failed to write' in caplog.text
+    assert calls['n'] == 4 + 3                          # 4 good + 3 attempts on the bad one
+
+    # A later run picks up the store that failed.
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', real)
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], FS=FS,
+                                   write_grid=False)
+    assert stats['written'] == 1 and stats['skipped'] == 4 and stats['failed'] == 0
+    assert (dest / '20230101T02.zarr').exists()
+
+
+def test_write_succeeds_on_retry(tmp_path, monkeypatch, caplog):
+    """A transient failure is retried and the store is written normally."""
+    pytest.importorskip('zarr')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    real = llc_v2.write_timestep_store
+    state = {'failed_once': False}
+
+    def flaky(dest_, step, fields, **kw):
+        if not state['failed_once']:
+            state['failed_once'] = True
+            raise PermissionError(None)                 # one transient 403
+        return real(dest_, step, fields, **kw)
+
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', flaky)
+    stats = llc_v2.extract_surface(out_dir, str(dest := tmp_path / 'd'), fields=['SST'],
+                                   FS=FS, write_grid=False, retry_wait=0)
+    assert stats['written'] == 5 and stats['failed'] == 0
+    assert 'retry 1/' in caplog.text
+    assert len(list(dest.iterdir())) == 5

@@ -53,6 +53,7 @@ convention already used for LLC4320 elsewhere in this codebase.
 import os
 import re
 import glob
+import time
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1423,7 +1424,8 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
                     grid_dir: str = None, FS: int = 4320, start: datetime = None,
                     end: datetime = None, limit: int = None, skip_existing: bool = True,
                     dry_run: bool = False, write_grid: bool = True, endpoint: str = None,
-                    profile: str = None) -> dict:
+                    profile: str = None, max_retries: int = 4,
+                    retry_wait: float = 10.0) -> dict:
     """End-to-end: discover hourly surface ``.data`` output, write one Zarr store per hour.
 
     Idempotent (like PAB's ``s3_push.py``): stores already marked complete
@@ -1447,9 +1449,15 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
         write_grid (bool, optional): also write ``grid.zarr`` (needs
             *grid_dir* and/or *mask_dir*; skipped with a warning otherwise).
         endpoint, profile: see `s3_filesystem`.
+        max_retries (int, optional): attempts per store before giving up on it
+            and moving to the next (the run never aborts on a write error).
+            Defaults to 4.
+        retry_wait (float, optional): seconds before the first retry, doubling
+            each attempt. Defaults to 10.
 
     Returns:
-        dict: {'discovered', 'written', 'skipped', 'incomplete', 'dt_seconds'}.
+        dict: {'discovered', 'written', 'skipped', 'incomplete', 'failed',
+            'dt_seconds', 'unreadable_folders'}.
     """
     fields = list(fields)
     if not fields:
@@ -1467,7 +1475,7 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
                 "%d unreadable folder(s) skipped",
                 len(steps), fields[0], out_dir, dts, len(unreadable))
     stats = {'discovered': len(steps), 'written': 0, 'skipped': 0, 'incomplete': 0,
-             'dt_seconds': dts,
+             'failed': 0, 'dt_seconds': dts,
              'unreadable_folders': [os.path.basename(u) for u in unreadable]}
 
     if dry_run:
@@ -1521,14 +1529,42 @@ def extract_surface(out_dir: str, dest: str, fields=('SST',), mask_dir: str = No
             logger.warning("no requested fields found for %s; store not written", s.store_name)
             stats['incomplete'] += 1
             continue
-        write_timestep_store(dest, s, arrays, complete=not missing, endpoint=endpoint,
-                             profile=profile)
+        # A single failed chunk PUT used to kill the whole run (observed
+        # 2026-10-08: s3fs raised PermissionError on a transient 403 from
+        # Nautilus while another job was hammering the same endpoint, and
+        # ~4,000 stores' worth of work stopped).  Retry the store, then give
+        # up on it and carry on: the store stays incomplete, so a later run
+        # picks it up.
+        wrote = False
+        for attempt in range(1, max_retries + 1):
+            try:
+                write_timestep_store(dest, s, arrays, complete=not missing,
+                                     endpoint=endpoint, profile=profile)
+                wrote = True
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    delay = retry_wait * 2 ** (attempt - 1)
+                    logger.warning("%s: write failed (%s: %s); retry %d/%d in %.0f s",
+                                   s.store_name, type(e).__name__, e, attempt,
+                                   max_retries - 1, delay)
+                    time.sleep(delay)
+                else:
+                    logger.error("%s: write failed after %d attempts (%s: %s); "
+                                 "left for a later run", s.store_name, max_retries,
+                                 type(e).__name__, e)
+        if not wrote:
+            stats['failed'] += 1
+            continue
         if missing:
             stats['incomplete'] += 1
             logger.warning("wrote %s without %s (left incomplete)", url, missing)
         else:
             stats['written'] += 1
             logger.info("wrote %s", url)
+    if stats['failed']:
+        logger.warning("%d store(s) failed to write and remain incomplete; "
+                       "re-run to pick them up", stats['failed'])
     return stats
 
 
