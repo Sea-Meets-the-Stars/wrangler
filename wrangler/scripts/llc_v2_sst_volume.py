@@ -5,9 +5,10 @@ section of claude_prompts/llc4320_v2.md) instead of the earlier guesses:
 
 * wet fraction 0.581 (was assumed 0.70) -- from the first real SST store's
   per-face statistics, global `wet fraction 0.581`.
-* 9,503 hourly stores (was assumed 8,760/yr) -- the dry run's
-  `discovered=9503`, i.e. 2023-01-01 01:00 through 2024-01-31 23:00 with no
-  gaps (that is exactly the number of hours in that closed interval).
+* 9,692 hourly stores -- the 2026-10-08 restart's `Discovered 9692 hourly SST
+  steps`, i.e. 2023-01-01 01:00 through 2024-02-08 20:00 with no gaps (that is
+  exactly the number of hours in that closed interval).  It was 9,503 while the
+  final folder was unreadable.
 
 Run with::
 
@@ -21,7 +22,11 @@ CHUNK = 720                    # (face, j, i) = (1, 720, 720)
 
 # --- measured on Pleiades ---------------------------------------------------
 WET_FRACTION = 0.581           # finite (ocean) points; land is NaN
-N_STORES = 9503                # hourly stores, 2023-01-01T01 .. 2024-01-31T23
+# 2026-10-08: the last OUT folder (2024_01_31_230000_to_2024_02_08_200000, a
+# symlink into the live run) became readable and added exactly its full span of
+# 189 h, so the record now runs to 2024-02-08T20 and the earlier 9,503 stands
+# only for the period before that folder opened up.
+N_STORES = 9692                # hourly stores, 2023-01-01T01 .. 2024-02-08T20
 # Compression, MEASURED 2026-09-25 from three consecutive stores in the live
 # run (473.5 MB each, 419 objects each): 563.8 MB of wet float32 per store
 # lands as 473.5 MB, i.e. 1.19x -- zstd does much less well on SST than the
@@ -39,7 +44,7 @@ MEASURED_SEC_PER_STORE = 78.0      # observed 74.6 overall / 82.4 recent
 THROUGHPUTS_MB_S = (10, 25, 50, 100)
 
 
-def expected_store_count(first='2023-01-01 01:00', last='2024-01-31 23:00') -> int:
+def expected_store_count(first='2023-01-01 01:00', last='2024-02-08 20:00') -> int:
     """Hourly stores in the closed interval [*first*, *last*].
 
     Used to check the dry run's ``discovered=`` against the span the folder
@@ -87,7 +92,7 @@ def estimate(n_fields: int = 1) -> dict:
 
 if __name__ == '__main__':
     n_expected = expected_store_count()
-    print(f"hours in [2023-01-01 01:00, 2024-01-31 23:00] = {n_expected:,}   "
+    print(f"hours in [2023-01-01 01:00, 2024-02-08 20:00] = {n_expected:,}   "
           f"dry run discovered = {N_STORES:,}   "
           f"{'MATCH (no gaps, no duplicate hours)' if n_expected == N_STORES else 'MISMATCH'}")
     for n in (1, 4, 12):
