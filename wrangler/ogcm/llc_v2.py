@@ -1236,6 +1236,47 @@ GRID_3D_FILES = ('hFacC', 'hFacS', 'hFacW')
 GRID_1D_FILES = {'RC': 'k', 'RF': 'k_p1', 'DRC': 'k_p1', 'DRF': 'k'}
 
 
+def consolidate_store(store_url: str, endpoint: str = None, profile: str = None) -> bool:
+    """Write consolidated metadata into a store so it opens in one request.
+
+    Without it every open walks the group and each array's ``zarr.json``
+    separately -- several round trips per store, which dominates the cost of
+    opening a long date range.  With it, readers (including
+    ``xarray.open_zarr``) fetch a single document.
+
+    Safe to call repeatedly; it only rewrites the group metadata, never the
+    chunks.
+
+    Args:
+        store_url (str): local path or ``s3://`` URL of a store.
+
+    Returns:
+        bool: True if consolidated, False if the store could not be opened.
+    """
+    import zarr
+    try:
+        # NOT `_zarr_store`: that wraps an *asynchronous* fsspec filesystem,
+        # whose directory listing comes back empty here, so consolidation
+        # would record zero members and readers using the default
+        # ``consolidated=None`` would see an empty store. A synchronous
+        # mapper lists correctly.
+        if is_s3(store_url):
+            fs = s3_filesystem(endpoint, profile, asynchronous=False)
+            store = fs.get_mapper(str(store_url)[len('s3://'):])
+        else:
+            store = str(store_url)
+        g = zarr.consolidate_metadata(store)
+        n = len(dict(g.members()))
+        if n == 0:
+            logger.warning("%s: consolidation found no arrays; leaving it alone", store_url)
+            return False
+        return True
+    except Exception as e:
+        logger.warning("%s: could not consolidate metadata (%s: %s)",
+                       store_url, type(e).__name__, e)
+        return False
+
+
 def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
                      FS: int = 4320, endpoint: str = None, profile: str = None,
                      skip_existing: bool = True) -> str:
@@ -1382,6 +1423,7 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
     root.attrs['variables'] = written
     root.attrs['skipped'] = skipped
     root.attrs['complete'] = 'maskC' in written
+    consolidate_store(url, endpoint, profile)
     return url
 
 
@@ -1417,6 +1459,7 @@ def write_timestep_store(dest: str, step: Timestep, fields: dict, complete: bool
     for var, (arr, attrs) in fields.items():
         write_surface_variable(root, var, arr, attrs=attrs)
     root.attrs['complete'] = bool(complete)
+    consolidate_store(url, endpoint, profile)
     return url
 
 

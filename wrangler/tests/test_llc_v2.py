@@ -7,6 +7,7 @@ real format (per matlab_v0/llc_shrunk_mex.c) and check the round trip.
 """
 
 import os
+import json
 
 import numpy as np
 import pytest
@@ -1046,3 +1047,33 @@ def test_write_succeeds_on_retry(tmp_path, monkeypatch, caplog):
     assert stats['written'] == 5 and stats['failed'] == 0
     assert 'retry 1/' in caplog.text
     assert len(list(dest.iterdir())) == 5
+
+
+def test_consolidate_store_records_members(tmp_path):
+    """Consolidation must capture the arrays, not write an empty member list.
+
+    Regression: the first version used the async fsspec store, whose listing
+    comes back empty over S3, so it wrote consolidated metadata with zero
+    members and readers using the default `consolidated=None` saw an empty
+    store.
+    """
+    zarr = pytest.importorskip('zarr')
+    xr = pytest.importorskip('xarray')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir,
+                           FS=FS, limit=1, write_grid=False)
+    url = str(dest / '20230101T01.zarr')
+
+    assert llc_v2.consolidate_store(url) is True
+    meta = json.loads((dest / '20230101T01.zarr' / 'zarr.json').read_text())
+    members = (meta.get('consolidated_metadata') or {}).get('metadata', {})
+    assert set(members) >= {'Theta', 'face', 'j', 'i'}, members
+
+    # The default read path (consolidated=None) must see the variable.
+    ds = xr.open_zarr(url, consolidated=None)
+    assert list(ds.data_vars) == ['Theta'] and ds.sizes['face'] == 13
+
+    # And a store written by the pipeline is consolidated already.
+    ds2 = xr.open_zarr(str(dest / '20230101T01.zarr'), consolidated=True)
+    assert list(ds2.data_vars) == ['Theta']

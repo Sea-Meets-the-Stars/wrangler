@@ -11,6 +11,12 @@ Welcome to the Wrangler documentation. Wrangler is a Python library for download
 
 .. toctree::
    :maxdepth: 2
+   :caption: HOWTOs
+
+   howto/llc4320_v2
+
+.. toctree::
+   :maxdepth: 2
    :caption: Core Modules
 
    grab_and_go

@@ -1,0 +1,220 @@
+.. _llc4320_v2_howto:
+
+======================================================
+LLC4320 v2 surface data: what it is and how to read it
+======================================================
+
+Hourly global sea surface temperature from the second-generation MITgcm
+LLC4320 simulation, on the model's native grid, served as Zarr from a public
+S3 bucket.
+
+Credit
+======
+
+The simulation was produced and is owned by **Dan Whitt (NASA Ames)**, who
+agreed to this public copy. Please credit him in any publication that uses
+these data, and contact him regarding the simulation itself. The copy
+described here was assembled by J. Xavier Prochaska with the ``wrangler``
+package; the compressed-format reader derives from MATLAB/MEX routines by
+Kaitlin Zhang and extraction tooling by Bron Nelson.
+
+At a glance
+===========
+
+==========================  =================================================
+Endpoint                    ``https://s3-west.nrp-nautilus.io``
+Bucket / prefix             ``s3://llc4320-v2/SURFACE``
+Credentials                 none; the bucket is public and read-only
+Variable                    ``Theta`` -- sea surface temperature, degrees C
+Coverage                    2023-01-01 01:00 to 2024-02-08 20:00 UTC
+Cadence                     hourly, 9,692 snapshots, no gaps
+Grid                        native LLC4320: 13 faces of 4320 x 4320
+Store layout                one Zarr store per hour, plus one static grid
+Chunking                    ``(face, j, i) = (1, 720, 720)``, float32
+Size                        about 470 MB per hour, 4.5 TB in total
+==========================  =================================================
+
+Land is ``NaN``. The ocean range across the record is roughly -2.6 to
+36.6 degrees C.
+
+How the data are laid out
+=========================
+
+Each hour is its own store, named for its UTC timestamp, and the grid is
+separate and static::
+
+    s3://llc4320-v2/SURFACE/grid.zarr              static, 23 variables
+    s3://llc4320-v2/SURFACE/20230101T01.zarr       first hour
+    s3://llc4320-v2/SURFACE/20230301T06.zarr       2023-03-01 06:00 UTC
+    s3://llc4320-v2/SURFACE/20240208T20.zarr       last hour
+
+An hourly store contains ``Theta`` with dimensions ``(face, j, i)`` and
+**no time dimension** -- the hour is the store's name. That is efficient for
+writing and for single-time access, and inconvenient for time series, so
+:mod:`wrangler.ogcm.llc_v2_access` supplies the missing time axis (below).
+
+``grid.zarr`` holds the horizontal grid and the vertical axes:
+
+* positions and geometry: ``XC``, ``YC``, ``XG``, ``YG``, ``rA``, ``rAs``,
+  ``rAw``, ``rAz``, ``dxC``, ``dyC``, ``dxG``, ``dyG``
+* bathymetry and masks: ``Depth``, ``maskC``, ``hFacC_k0``, ``hFacS_k0``,
+  ``hFacW_k0``
+* grid rotation: ``CS``, ``SN`` (cosine and sine of the grid angle, needed to
+  rotate vector fields to east/north)
+* vertical axes: ``RC`` and ``DRF`` on 173 levels, ``RF`` and ``DRC`` on 174
+  interfaces
+
+The horizontal grid is the same as the original LLC4320. The bathymetry,
+land mask, ``hFac`` and vertical grid are **not** -- use this ``grid.zarr``,
+not one from the earlier run.
+
+A word about the 13 faces
+-------------------------
+
+Values are on the native Lat-Lon-Cap layout: 13 square faces of 4320 x 4320.
+Faces 0-5 and 6 (the Arctic cap) are oriented as you would expect; faces 7-12
+are rotated, so on those a row of constant ``j`` runs roughly along a
+meridian rather than a parallel. Never assume ``j`` is latitude. Always take
+positions from ``XC``/``YC`` in ``grid.zarr``, which are stored in the same
+layout as the data.
+
+Every store carries the attribute ``face_layout = "llc_faces"``, which marks
+the corrected face ordering. If you meet a store without it, its faces 7-12
+are in the raw MITgcm "compact" order and need
+:func:`wrangler.ogcm.llc_v2.compact_to_faces`; no such store remains in this
+bucket.
+
+Reading it with xarray alone
+============================
+
+No credentials are required. Nautilus runs Ceph, which needs path-style
+addressing::
+
+    import xarray as xr
+
+    OPTS = {"anon": True,
+            "client_kwargs": {"endpoint_url": "https://s3-west.nrp-nautilus.io"},
+            "config_kwargs": {"s3": {"addressing_style": "path"}}}
+
+    ds   = xr.open_zarr("s3://llc4320-v2/SURFACE/20230301T06.zarr", storage_options=OPTS)
+    grid = xr.open_zarr("s3://llc4320-v2/SURFACE/grid.zarr",        storage_options=OPTS)
+
+    sst  = ds.Theta.isel(face=4)          # (4320, 4320), degrees C, NaN on land
+    lon  = grid.XC.isel(face=4)
+    lat  = grid.YC.isel(face=4)
+
+Requires ``xarray``, ``zarr`` (version 3 or later) and ``s3fs``.
+
+Reading it with wrangler
+========================
+
+:mod:`wrangler.ogcm.llc_v2_access` adds the time axis and the
+latitude/longitude lookup. Install ``wrangler`` and import it::
+
+    from wrangler.ogcm import llc_v2_access as llc
+
+A date range as one dataset
+---------------------------
+
+::
+
+    ds = llc.open_range("2023-03-01", "2023-03-08")     # 169 hourly steps
+    ds.Theta                                            # (time, face, j, i), lazy
+
+    mean = ds.Theta.isel(face=4).mean("time").compute()
+
+Store names are generated from the hourly cadence rather than listed, so the
+call costs one metadata request per hour: a week is a few seconds, a year
+takes a few minutes. Subset in time before you compute.
+
+A time series at a location
+---------------------------
+
+::
+
+    sst = llc.extract_point(36.8, -121.9, "2023-03-01", "2023-04-01")
+    sst.Theta.plot()
+    sst.attrs["distance_km"]        # how far the chosen cell is from the request
+
+The first call downloads ``XC``/``YC`` once (about 2 GB) and caches a
+sub-sampled copy under ``~/.cache/wrangler/llc4320_v2``; later calls take a
+second. :func:`~wrangler.ogcm.llc_v2_access.nearest_index` exposes the lookup
+on its own and returns the chosen ``face``, ``j``, ``i`` and the cell's true
+position.
+
+A latitude/longitude box
+------------------------
+
+A box on the sphere can straddle several faces, and the faces are not aligned
+with latitude and longitude, so there is no single rectangular slice.
+:func:`~wrangler.ogcm.llc_v2_access.region_slices` returns, per intersecting
+face, the smallest index rectangle that contains that face's part of the box.
+It is inclusive rather than exact, so mask afterwards::
+
+    grid  = llc.open_grid()
+    boxes = llc.region_slices(30, 40, -130, -115)       # California Current
+
+    for face, (js, isl) in boxes.items():
+        g   = grid.isel(face=face, j=js, i=isl)
+        ds  = llc.open_range("2023-07-01", "2023-07-02").isel(face=face, j=js, i=isl)
+        sel = ds.Theta.where((g.YC >= 30) & (g.YC <= 40) &
+                             (g.XC >= -130) & (g.XC <= -115))
+
+Performance notes
+=================
+
+* **Chunks are** ``(1, 720, 720)``, about 2 MB each. Reads aligned to that
+  are cheapest; a whole face is 36 chunks and takes roughly a second.
+* **Metadata is consolidated**, so a store opens in a single request. Keep
+  the default ``consolidated=None`` and xarray will use it.
+* **Time series are metadata-bound, not bandwidth-bound.** The cost of a long
+  range is one request per hour before any data moves. Restrict the time span
+  first, then the space.
+* **Land chunks are absent.** Chunks that are entirely land were never
+  written and read back as ``NaN``; this is why a store holds about 419
+  objects rather than the full 468.
+
+What is here, and what may follow
+=================================
+
+Only the surface temperature product exists today. The layout was chosen so
+that more can be added without changing anything above.
+
+* **More surface fields.** The pipeline already understands ``SSS``
+  (salinity), ``SSU``/``SSV`` (native velocity components), ``Eta``, the
+  surface fluxes and the sea-ice fields. Each would appear as an extra
+  variable inside the same hourly stores, so ``open_range`` and the rest keep
+  working unchanged. Note that ``SSU``/``SSV`` are stored on the native,
+  face-relative axes; rotating them to east/north needs ``CS`` and ``SN``
+  from ``grid.zarr``.
+* **Depth levels.** Full-depth fields live in a compressed format
+  (``.shrunk`` plus bit masks) which :mod:`wrangler.ogcm.llc_v2` can already
+  decode. Those would go under a separate prefix, for example
+  ``s3://llc4320-v2/DEPTH``, with a ``k`` dimension added and chunking that
+  keeps a water column together.
+
+This document will be updated when either arrives.
+
+Known caveats
+=============
+
+* A few thousand ocean points per snapshot (about 0.0025 percent) hold
+  exactly 0.0 rather than a temperature. These are cells the land mask calls
+  wet but the model wrote as zero, most likely ice-shelf cavities or a small
+  bathymetry difference between the mask and the run. Filter them if exact
+  zeros matter to you.
+* Times are UTC snapshots, not averages.
+* The model timestep varies between run segments, so iteration numbers in the
+  ``selected_iteration`` attribute are not comparable across segments. Use the
+  timestamps.
+
+Provenance
+==========
+
+Extracted from the raw MITgcm output on NASA Pleiades at
+``/nobackupp27/dbwhitt/llc_4320/OUT`` with
+``wrangler.scripts.llc_v2_surface``. Each store records its source in its
+attributes: ``selected_date_utc``, ``selected_iteration``, ``source_folder``
+and ``source_file``. The code, and the full working record of how the dataset
+was built, are in the ``wrangler`` repository under ``wrangler/ogcm/`` and
+``claude_prompts/llc4320_v2.md``.
