@@ -3,6 +3,10 @@ Wrangler Documentation
 
 Welcome to the Wrangler documentation. Wrangler is a Python library for downloading, processing, and analyzing satellite data.
 
+Looking for the **public LLC4320 v2 surface data**? Start with
+:ref:`llc4320_v2_howto` -- hourly global sea surface temperature on the native
+grid, readable with no credentials from ``s3://llc4320-v2/SURFACE``.
+
 .. toctree::
    :maxdepth: 2
    :caption: Getting Started

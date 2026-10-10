@@ -79,6 +79,23 @@ Optional Requirements:
 * seaborn
 * matplotlib
 
+Public data: LLC4320 v2 surface fields
+--------------------------------------
+
+Wrangler maintains a public, hourly, global sea surface temperature product on
+the model's native grid, extracted from the second-generation MITgcm LLC4320
+simulation of Dan Whitt (NASA Ames) and served as Zarr from
+``s3://llc4320-v2/SURFACE``. No credentials are required::
+
+    from wrangler.ogcm import llc_v2_access as llc
+
+    ds  = llc.open_range("2023-03-01", "2023-03-08")       # hourly, lazy
+    sst = llc.extract_point(36.8, -121.9, "2023-03-01", "2023-04-01")
+
+See the `LLC4320 v2 HOWTO
+<https://wrangler.readthedocs.io/en/llc4320_v2/howto/llc4320_v2.html>`_ for the
+coverage, the layout, the native 13-face grid and the full reader API.
+
 Documentation
 ------------
 
