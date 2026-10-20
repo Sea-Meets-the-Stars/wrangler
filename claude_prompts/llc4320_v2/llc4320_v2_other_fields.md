@@ -47,6 +47,9 @@ including SST.
 Use Fable if you can.
 Log your work.
 
+2. See my answers to your second round of questions.  Then write the
+design document.  Use Fable if you can. Log your work.
+
 ## Pre-run Q&A
 
 **Claude (2026-10-20):** Questions before any of this is designed. The first
@@ -239,7 +242,29 @@ end). Three need you, plus one short paste from Pleiades.
     ```
     My recommendation: extract whatever is present in all 83 folders, and
     label averages honestly if that is what they are.
->A.
+>A.  The first command (grep) returns "0".  The second command gives nothing.
+  Use your recommendation
+
+    **Claude:** How I read this. The only command above that prints a bare
+    `0` is `ls $F1 | grep -c '\.meta$'`, so: **there are no `.meta` files**
+    (the `timeInterval` check is unavailable). "The second command gives
+    nothing" fits the inventory line, and that one was my mistake: the tool
+    prints the heading `(field, ext) -> number of folders containing it:`,
+    not the word `combos`, so `grep "^combos"` can never match. The
+    `data.diagnostics` grep result is therefore unknown to me, and the
+    snapshot-vs-mean question for the `oce*`/`SI*` fields **remains open**.
+    It changes attributes and the HOWTO caveat, not the store layout, so the
+    design proceeds: `--fields all` resolves the field list at run time from
+    what is present in every folder, a `--time-mean` option labels averages
+    with `cell_methods`, the uncertainty is recorded in the variable
+    attributes until settled, and a metadata-only fix-up exists if the
+    answer arrives after the run. The corrected pre-launch commands are in
+    the design doc, sections 4.2 and 4.3:
+    ```bash
+    grep -iE "frequency|fileName|fields\(|levels\(" $F1/data.diagnostics | head -40
+    grep -iE "frequency|fileName" $F1/STDOUT.0000 | head -40
+    wr_llc_v2_inventory $OUT --quiet | sed -n '/number of folders containing it/,$p'
+    ```
 
 11. **All remaining fields in one pass, or `SSS`/`SSU`/`SSV` first?** One
     pass is the most efficient order you asked for in Q2: every store is
@@ -252,7 +277,7 @@ end). Three need you, plus one short paste from Pleiades.
     days and let the Q10 answer land before the diagnostics are written.
     My recommendation: two passes, unless Q10 is answered before launch, in
     which case one.
->A.
+>A.  I have answered Q10.  Do one pass
 
 12. **Keep the full read-back verification?** Every chunk written is read
     back and compared, which is why each store crosses the wire twice. In a
@@ -265,14 +290,14 @@ end). Three need you, plus one short paste from Pleiades.
     default `full`, run the first window of each pass at `full`, and let
     the benchmark in Q4 tell us whether dropping to `sample` for the bulk
     is worth it.
->A.
+>A.  Use your recommendation
 
 13. **Run the Q4 benchmark first, or launch at four windows?** The benchmark
     is 40 minutes and three commands; launching blind at four processes
     would most likely work but could leave a 2-4x speed-up unused for a
     multi-week run. My recommendation: benchmark, then launch with whatever
     N it indicates.
->A.
+>A.  Use your recommendation
 
 **Decisions I am settling myself** (say so if you disagree with any):
 
@@ -436,3 +461,59 @@ kept; streaming per-field writes; re-consolidation on append; tolerant
 `open_range`; HOWTO and test scope.
 
 Model note: this round ran as Fable 5.1, as the prompt asked.
+
+### 2026-10-20 (Design prompt 2: read answers 10-13; wrote llc4320_v2_design.md)
+
+Reread this file. Answers: Q10 "the first command (grep) returns 0, the
+second gives nothing, use your recommendation"; Q11 one pass of all
+remaining fields; Q12 and Q13 my recommendations (`--verify {full,sample,none}`
+default `full`; benchmark first, then launch with the N it indicates).
+
+**Q10 reading.** The only command in that block that prints a bare `0` is
+`ls $F1 | grep -c '\.meta$'`, so there are no `.meta` files and the
+`timeInterval` test is unavailable. "The second command gives nothing" is
+the inventory line, and that was my error: `wr_llc_v2_inventory` prints the
+heading `(field, ext) -> number of folders containing it:`, not `combos`
+(checked `wrangler/scripts/llc_v2_inventory.py`). So whether the `oce*`/`SI*`
+diagnostics are snapshots or hourly means is still unresolved, and the field
+list is still unconfirmed. Did not invent a result: the design resolves the
+field list at run time from what is present in every folder, adds
+`--time-mean` to label averages with `cell_methods`, records the uncertainty
+in the variable attributes, provides a metadata-only fix-up, and lists the
+corrected pre-launch commands (`data.diagnostics`/`STDOUT.0000` frequency
+greps, inventory summary via `sed`). Added an indented note under the Q10
+answer saying so.
+
+**Design doc** written to `claude_prompts/llc4320_v2/llc4320_v2_design.md`,
+self-contained. Sections: summary and decision table; the raw source
+(folders, compact layout, dating rule, deltaT/nIter0, masks, grid); how SST
+was extracted (reading, the face-order bug and its in-place repair, masking
+and the exact-zero artefact, store layout/chunking/compression, `grid.zarr`
+and the C-grid staggering fix, consolidated metadata, completeness and
+verification and retries, public access and the reader, state and measured
+performance); the new fields (table of prefix -> variable, units, location,
+dims, mask, sampling; the open snapshot/mean question and how it is handled;
+run-time field list); design changes (append mode and per-variable
+completeness with the legacy rule for existing stores, mask by staggering,
+`--concurrency` and whole-variable writes, `--workers` with disjoint windows
+by construction, `--verify`, streaming per field and per-variable retries,
+re-consolidation, `open_range` on mixed variable sets, CLI table); the
+benchmark plan (A defaults, B concurrency 40, C four windows, D one hour of
+all fields locally for per-field sizes); run order (two outage hours now ->
+code and tests -> pre-launch pastes -> benchmark -> one pass -> audit ->
+HOWTO -> the 189 hours); storage and runtime estimates; HOWTO changes;
+tests; risks and open items.
+
+**New finding while estimating.** Re-ran `llc_v2_sst_volume.estimate`: 15
+remaining fields at SST's measured 0.47 GB per field-hour is 69 TB stored
+(73 TB with Theta), above the 55 TB accepted in Q3. The ten full-ocean
+fields alone are ~46 TB; the five sea-ice fields are mostly zeros and should
+compress 10-50x (inference, unmeasured), which would bring the total to
+~52-55 TB. Benchmark run D (one hour of all fields to local scratch, `du`
+per variable) measures this before launch; flagged as the first risk.
+
+No code changed; nothing on the bucket touched. Open items for Xavier: run
+the two outage-hour commands; paste the three pre-launch checks; run the
+benchmark; send the Dan email (add the `SIuice`/`SIvice` grid-location
+question); confirm the bucket quota against the upper-bound estimate. This
+round ran as Fable 5.1.
