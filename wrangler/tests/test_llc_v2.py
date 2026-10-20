@@ -1,0 +1,1219 @@
+""" Tests for the pure-Python .shrunk (LLC4320 v2) decoder.
+
+There's no real .shrunk/.bits sample data available locally (it only
+lives on NASA Pleiades), so these build small synthetic files that
+follow the exact same bit-packing / big-endian float32 scheme as the
+real format (per matlab_v0/llc_shrunk_mex.c) and check the round trip.
+"""
+
+import os
+import json
+
+import numpy as np
+import pytest
+
+from wrangler.ogcm import llc_v2
+
+
+FS = 8  # facet side; must be divisible by 8. Small so tests are fast.
+
+
+def _file_order(faces):
+    """Flatten a (13, FS, FS) true-face array back to on-disk (compact) order."""
+    return llc_v2.faces_to_compact(np.asarray(faces)).reshape(-1)
+
+
+def test_compact_to_faces():
+    """Faces 0-6 are plain blocks; faces 7-12 are column blocks of (FS, 3FS) facets."""
+    flat = np.arange(13 * FS * FS, dtype=np.float32)
+    faces = llc_v2.compact_to_faces(flat, FS)
+    assert faces.shape == (13, FS, FS)
+    np.testing.assert_array_equal(faces[:7], flat[:7 * FS * FS].reshape(7, FS, FS))
+    for f0 in (7, 10):
+        facet = flat[f0 * FS * FS:(f0 + 3) * FS * FS].reshape(FS, 3 * FS)
+        for k in range(3):
+            np.testing.assert_array_equal(faces[f0 + k], facet[:, k * FS:(k + 1) * FS])
+    # rows of a true face are contiguous slices of the facet, not interleaved
+    assert faces[7, 1, 0] - faces[7, 0, 0] == 3 * FS
+    np.testing.assert_array_equal(_file_order(faces), flat)
+    np.testing.assert_array_equal(llc_v2.compact_to_faces(flat.reshape(13, FS, FS)), faces)
+
+
+def test_face_index_conversions():
+    flat = np.arange(13 * FS * FS).reshape(13, FS, FS)
+    faces = llc_v2.compact_to_faces(flat)
+    for idx in [(0, 1, 2), (6, 7, 7), (7, 0, 5), (8, 3, 1), (9, 7, 7), (11, 2, 6), (12, 5, 0)]:
+        c = llc_v2.face_index_to_compact(*idx, FS)
+        assert flat[c] == faces[idx]
+        assert llc_v2.compact_index_to_face(*c, FS) == idx
+
+
+def test_stored_faces_legacy_and_new():
+    flat = np.arange(13 * FS * FS, dtype=np.float32).reshape(13, FS, FS)
+
+    class G(dict):
+        def __init__(self, arr, attrs):
+            super().__init__(v=arr)
+            self.attrs = attrs
+    faces = llc_v2.compact_to_faces(flat)
+    np.testing.assert_array_equal(llc_v2.stored_faces(G(flat, {}), 'v'), faces)
+    np.testing.assert_array_equal(
+        llc_v2.stored_faces(G(faces, {'face_layout': llc_v2.FACE_LAYOUT}), 'v'), faces)
+
+
+def _write_level(tmp_path, name_prefix, mask_bits, values, mode='wb'):
+    """Write one level's mask bits and packed big-endian float32 values.
+
+    Args:
+        mask_bits (np.ndarray): boolean array, length 13*FS*FS.
+        values (np.ndarray): float32 values for the True positions, in
+            flat order.
+
+    Returns:
+        tuple: (mask_file, shrunk_file) paths.
+    """
+    mask_file = tmp_path / f"{name_prefix}.bits"
+    shrunk_file = tmp_path / f"{name_prefix}.shrunk"
+
+    packed = np.packbits(mask_bits.astype(np.uint8), bitorder='little')
+    with open(mask_file, mode) as f:
+        f.write(packed.tobytes())
+    with open(shrunk_file, mode) as f:
+        f.write(values.astype('>f4').tobytes())
+
+    return str(mask_file), str(shrunk_file)
+
+
+def test_mask_bytes_per_level():
+    assert llc_v2.mask_bytes_per_level(FS) == 13 * FS * FS // 8
+    with pytest.raises(ValueError):
+        llc_v2.mask_bytes_per_level(7)  # not divisible by 8
+
+
+def test_mask_file_for_field():
+    assert llc_v2.mask_file_for_field('U') == 'hFacW.bits'
+    assert llc_v2.mask_file_for_field('V') == 'hFacS.bits'
+    for field in ['Theta', 'Salt', 'W', 'Eta', 'oceTAUX']:
+        assert llc_v2.mask_file_for_field(field) == 'hFacC.bits'
+
+
+def test_read_mask_level_and_decompress_roundtrip(tmp_path):
+    rng = np.random.default_rng(42)
+    n = 13 * FS * FS
+    mask_bits = rng.random(n) < 0.6  # ~60% wet
+    values = rng.uniform(-2, 35, size=int(mask_bits.sum())).astype(np.float32)
+
+    mask_file, shrunk_file = _write_level(tmp_path, 'level0', mask_bits, values)
+
+    # Mask round-trips exactly.
+    mask = llc_v2.read_mask_level(mask_file, FS, level=0)
+    np.testing.assert_array_equal(mask, mask_bits)
+
+    # Decompressed field: wet points match input values, dry points are 0.
+    field = llc_v2.decompress_level(shrunk_file, mask, byte_offset=0)
+    assert field.shape == (13, FS, FS)
+    np.testing.assert_allclose(_file_order(field)[mask], values, rtol=1e-6)
+    assert np.all(_file_order(field)[~mask] == 0.0)
+
+
+def test_detect_nz_and_multi_level_offsets(tmp_path):
+    rng = np.random.default_rng(7)
+    n = 13 * FS * FS
+    n_levels = 3
+
+    all_masks = [rng.random(n) < 0.5 for _ in range(n_levels)]
+    all_values = [
+        rng.uniform(-2, 35, size=int(m.sum())).astype(np.float32)
+        for m in all_masks
+    ]
+
+    mask_file = tmp_path / 'hFacC.bits'
+    shrunk_file = tmp_path / 'Theta.0000000000.shrunk'
+    with open(mask_file, 'wb') as fm, open(shrunk_file, 'wb') as fd:
+        for m in all_masks:
+            fm.write(np.packbits(m.astype(np.uint8), bitorder='little').tobytes())
+        for v in all_values:
+            fd.write(v.astype('>f4').tobytes())
+
+    assert llc_v2.detect_nz(str(mask_file), FS) == n_levels
+
+    for lev in range(n_levels):
+        expected_offset = sum(int(m.sum()) for m in all_masks[:lev]) * 4
+        assert llc_v2.level_byte_offset(str(mask_file), FS, lev) == expected_offset
+
+        mask = llc_v2.read_mask_level(str(mask_file), FS, level=lev)
+        np.testing.assert_array_equal(mask, all_masks[lev])
+
+        field = llc_v2.decompress_level(str(shrunk_file), mask, byte_offset=expected_offset)
+        np.testing.assert_allclose(
+            _file_order(field)[mask], all_values[lev], rtol=1e-6)
+
+
+def test_read_shrunk_field_and_read_sst(tmp_path):
+    data_dir = tmp_path / 'data'
+    mask_dir = tmp_path / 'mask'
+    data_dir.mkdir()
+    mask_dir.mkdir()
+
+    rng = np.random.default_rng(99)
+    n = 13 * FS * FS
+    mask_bits = rng.random(n) < 0.7
+    sst_values = rng.uniform(-2, 32, size=int(mask_bits.sum())).astype(np.float32)
+
+    packed = np.packbits(mask_bits.astype(np.uint8), bitorder='little')
+    with open(mask_dir / 'hFacC.bits', 'wb') as f:
+        f.write(packed.tobytes())
+    with open(data_dir / 'Theta.0000021240.shrunk', 'wb') as f:
+        f.write(sst_values.astype('>f4').tobytes())
+
+    field = llc_v2.read_shrunk_field(str(data_dir), str(mask_dir), 'Theta',
+                                     21240, FS, level=0)
+    assert field.shape == (13, FS, FS)
+    np.testing.assert_allclose(_file_order(field)[mask_bits], sst_values, rtol=1e-6)
+
+    # read_sst is the same thing for Theta/k=0.
+    sst = llc_v2.read_sst(str(data_dir), str(mask_dir), 21240, FS=FS)
+    np.testing.assert_array_equal(sst, field)
+
+
+def test_read_shrunk_field_missing_files(tmp_path):
+    with pytest.raises(IOError):
+        llc_v2.read_shrunk_field(str(tmp_path), str(tmp_path), 'Theta',
+                                 123, FS, level=0)
+
+
+# ---------------------------------------------------------------------------
+# Discovery (folder naming + Dimitris' "start + n hours" dating rule)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+
+STRIDE = 144  # iterations per hour used by the shrunk-format fixtures below
+
+# Two run segments with different deltaT / nIter0 (Dan: both vary per folder).
+#   folder 1: 00h -> 03h, deltaT=5 s  (720 it/h), nIter0=0     -> files at 720, 1440, 2160
+#   folder 2: 03h -> 05h, deltaT=10 s (360 it/h), nIter0=2160  -> files at 2520, 2880
+# Dating rule: first file = folder start + 1 h, last file = folder end.
+SEG1 = ('2023_01_01_000000_to_2023_01_01_030000', 720, 0, [1, 2, 3])
+SEG2 = ('2023_01_01_030000_to_2023_01_01_050000', 360, 2160, [4, 5])
+
+
+def _write_data(path, arr):
+    with open(path, 'wb') as f:
+        f.write(np.asarray(arr, dtype='>f4').tobytes())
+
+
+def _make_out_tree(tmp_path, FS=FS, seed=0, fields=('SST', 'SSS')):
+    """Synthetic /nobackupp27/.../OUT with hourly uncompressed surface .data files.
+
+    Land points are exactly 0 in every field (as MITgcm writes them); the
+    matching hFacC.bits mask is written to a mask dir.  Folder 1 carries a
+    `data` namelist, folder 2 a STDOUT.0000, each consistent with the file
+    iteration numbers.  Distractors: Eta.*.data (another field), .meta
+    companions, a non-output folder, a stray file.
+
+    Returns:
+        (out_dir, mask_dir, truth) with truth = {iteration: {field: flat float32 values
+        over the whole grid (0 on land)}} plus truth['wet'] = flat bool mask,
+        truth['hours'] = {iteration: hour of day}.
+    """
+    rng = np.random.default_rng(seed)
+    n = 13 * FS * FS
+    wet = rng.random(n) < 0.7
+    out_dir = tmp_path / 'OUT'
+    mask_dir = tmp_path / 'mask'
+    out_dir.mkdir()
+    mask_dir.mkdir()
+    with open(mask_dir / 'hFacC.bits', 'wb') as f:
+        f.write(np.packbits(wet.astype(np.uint8), bitorder='little').tobytes())
+    # U/V masks (slightly different, as on a C-grid) for SSU/SSV tests.
+    for name in ('hFacW.bits', 'hFacS.bits'):
+        with open(mask_dir / name, 'wb') as f:
+            f.write(np.packbits(wet.astype(np.uint8), bitorder='little').tobytes())
+
+    truth = {'wet': wet, 'hours': {}}
+    for name, stride, n_iter0, hours in (SEG1, SEG2):
+        d = out_dir / name
+        d.mkdir()
+        t0_hour = int(name[11:13])
+        for k, h in enumerate(hours):
+            it = n_iter0 + (k + 1) * stride
+            assert h == t0_hour + k + 1
+            truth['hours'][it] = h
+            truth[it] = {}
+            for fld in fields:
+                vals = np.zeros(n, dtype=np.float32)
+                lo, hi = (-2, 32) if fld == 'SST' else (30, 38)
+                vals[wet] = rng.uniform(lo, hi, size=int(wet.sum())).astype(np.float32)
+                vals[wet & (vals == 0)] = 0.5
+                _write_data(d / f'{fld}.{it:010d}.data', vals)
+                (d / f'{fld}.{it:010d}.meta').write_text('nDims = [ 2 ];\n')
+                truth[it][fld] = vals
+            eta = np.zeros(n, dtype=np.float32)
+            eta[wet] = 0.1
+            _write_data(d / f'Eta.{it:010d}.data', eta)
+        dt = 3600 // stride
+        if name == SEG1[0]:
+            (d / 'data').write_text(f" &PARM03\n nIter0={n_iter0},\n deltaT={dt}.,\n &\n")
+        else:
+            (d / 'STDOUT.0000').write_text(
+                "(PID.TID 0000.0001) // Model parameters\n"
+                f"(PID.TID 0000.0001) > nIter0={n_iter0},\n"
+                f"(PID.TID 0000.0001) > deltaT={dt}.,\n"
+                f"(PID.TID 0000.0001) deltaT = {dt:.15E} /* time step */\n")
+    (out_dir / 'not_an_output_folder').mkdir()
+    (out_dir / 'proc').mkdir()
+    (out_dir / 'README.txt').write_text('ignore me')
+    return str(out_dir), str(mask_dir), truth
+
+
+def test_parse_folder_name():
+    t0, t1 = llc_v2.parse_folder_name('2023_01_08_060000_to_2023_01_12_020000')
+    assert t0 == datetime(2023, 1, 8, 6, tzinfo=timezone.utc)
+    assert t1 == datetime(2023, 1, 12, 2, tzinfo=timezone.utc)
+    # Full paths are fine too.
+    t0b, _ = llc_v2.parse_folder_name('/nobackupp27/dbwhitt/llc_4320/OUT/'
+                                      '2023_01_08_060000_to_2023_01_12_020000/')
+    assert t0b == t0
+    with pytest.raises(ValueError):
+        llc_v2.parse_folder_name('matlab_v0')
+
+
+def test_store_name_for_date():
+    d = datetime(2023, 1, 1, 6, tzinfo=timezone.utc)
+    assert llc_v2.store_name_for_date(d) == '20230101T06.zarr'
+
+
+def test_discover_timesteps_dates_and_ordering(tmp_path, caplog):
+    out_dir, _, truth = _make_out_tree(tmp_path)
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'SST')
+
+    assert len(steps) == 5
+    iters = sorted(truth['hours'])
+    assert [s.iteration for s in steps] == iters
+    # Dan's rule: first file = folder start + 1 h ... last = folder end.
+    expected = [datetime(2023, 1, 1, truth['hours'][it], tzinfo=timezone.utc) for it in iters]
+    assert [s.date for s in steps] == expected
+    assert [s.date.hour for s in steps] == [1, 2, 3, 4, 5]
+    assert [s.n_in_folder for s in steps] == [0, 1, 2, 0, 1]
+    assert steps[3].folder.endswith(SEG2[0])
+    assert all(os.path.isfile(s.path) and s.path.endswith('.data') for s in steps)
+    assert steps[0].store_name == '20230101T01.zarr'
+    assert steps[4].store_name == '20230101T05.zarr'
+
+    # Distinct model timesteps per segment, from the within-folder strides.
+    assert llc_v2.infer_timestep_seconds(steps) == [5.0, 10.0]
+
+    # Namelist (folder 1) and STDOUT (folder 2) both agree with the rule:
+    # info lines, no warnings.
+    assert caplog.text.count('numbering convention: absolute') == 2
+    assert 'disagrees' not in caplog.text
+    assert 'spans' not in caplog.text
+
+    # Other fields / extensions discover independently.
+    assert len(llc_v2.discover_timesteps(out_dir, 'Eta')) == 5
+    assert llc_v2.discover_timesteps(out_dir, 'Salt') == []
+    assert llc_v2.discover_timesteps(out_dir, 'SST', ext='shrunk') == []
+
+
+def test_discover_timesteps_date_window(tmp_path):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    start = datetime(2023, 1, 1, 2)             # naive -> treated as UTC
+    end = datetime(2023, 1, 1, 5, tzinfo=timezone.utc)
+    steps = llc_v2.discover_timesteps(out_dir, 'SST', start=start, end=end)
+    assert [s.date.hour for s in steps] == [2, 3, 4]
+
+
+def test_discover_timesteps_warns_on_gap(tmp_path, caplog):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    # A folder claiming 4 hours (00..04 on Jan 2) but holding hours 1, 3, 4
+    # only: non-constant iteration stride + span/count mismatch -> warnings.
+    gap = os.path.join(out_dir, '2023_01_02_000000_to_2023_01_02_040000')
+    os.mkdir(gap)
+    for h in (1, 3, 4):
+        open(os.path.join(gap, f'SST.{h * 720:010d}.data'), 'wb').close()
+    with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'SST')
+    assert len(steps) == 8
+    assert 'stride is not constant' in caplog.text
+    assert 'spans 4.00 h but holds 3 files -- expected exactly 4' in caplog.text
+    # The gap folder's dates after the hole are (knowingly) position-based.
+    gap_steps = [s for s in steps if s.folder == gap]
+    assert [s.date.hour for s in gap_steps] == [1, 2, 3]
+    # Gap folder strides 1440 and 720 add 2.5 s and 5 s to the segment values.
+    assert llc_v2.infer_timestep_seconds(steps) == [2.5, 5.0, 10.0]
+def test_decompress_dry_value(tmp_path):
+    rng = np.random.default_rng(3)
+    n = 13 * FS * FS
+    mask_bits = rng.random(n) < 0.5
+    values = rng.uniform(0, 1, size=int(mask_bits.sum())).astype(np.float32)
+    _, shrunk_file = _write_level(tmp_path, 'lvl', mask_bits, values)
+    field = llc_v2.decompress_level(shrunk_file, mask_bits, dry_value=np.nan)
+    flat = _file_order(field)
+    assert np.all(np.isnan(flat[~mask_bits]))
+    np.testing.assert_allclose(flat[mask_bits], values, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Zarr output (needs zarr; skipped in envs without it, e.g. ocean14)
+# ---------------------------------------------------------------------------
+
+def test_extract_surface_end_to_end_local(tmp_path, caplog):
+    zarr = pytest.importorskip('zarr')
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    wet = truth['wet']
+    dest = tmp_path / 'dest'
+
+    # Dry run writes nothing.
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'], FS=FS,
+                                   dry_run=True)
+    assert stats['discovered'] == 5 and stats['written'] == 0
+    assert not dest.exists()
+
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'],
+                                   mask_dir=mask_dir, FS=FS)
+    assert stats == {'discovered': 5, 'written': 5, 'skipped': 0, 'incomplete': 0,
+                     'failed': 0, 'dt_seconds': [5.0, 10.0], 'unreadable_folders': []}
+
+    names = sorted(p.name for p in dest.iterdir())
+    assert names == ['20230101T01.zarr', '20230101T02.zarr', '20230101T03.zarr',
+                     '20230101T04.zarr', '20230101T05.zarr', 'grid.zarr']
+
+    # grid.zarr from the mask dir alone: maskC only.
+    g = zarr.open_group(str(dest / 'grid.zarr'), mode='r', use_consolidated=False)
+    np.testing.assert_array_equal(_file_order(g['maskC'][:]), wet)
+    assert g.attrs['complete'] is True and g.attrs['variables'] == ['maskC']
+
+    # One hourly store: dims/chunks/attrs/values, NaN over land, both variables.
+    steps = llc_v2.discover_timesteps(out_dir, 'SST')
+    s = steps[3]                                            # 04h, folder 2
+    g = zarr.open_group(str(dest / s.store_name), mode='r', use_consolidated=False)
+    assert sorted(g.array_keys()) == ['Salt', 'Theta', 'face', 'i', 'j']
+    z = g['Theta']
+    assert z.shape == (13, FS, FS)
+    assert z.chunks == (1, FS, FS)            # (1, 720, 720) clipped to FS=8
+    assert tuple(z.metadata.dimension_names) == ('face', 'j', 'i')
+    assert g.attrs['selected_iteration'] == s.iteration == 2160 + 360
+    assert g.attrs['selected_date_utc'] == '2023-01-01 04:00:00'
+    assert g.attrs['source_folder'] == SEG2[0]
+    assert g.attrs['variables'] == ['Salt', 'Theta']
+    assert g.attrs['complete'] is True
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
+    assert z.attrs['units'] == 'degC' and z.attrs['source_file_prefix'] == 'SST'
+    assert z.attrs['source_file'] == f'SST.{s.iteration:010d}.data'
+    for var, prefix in (('Theta', 'SST'), ('Salt', 'SSS')):
+        flat = _file_order(g[var][:])
+        np.testing.assert_allclose(flat[wet], truth[s.iteration][prefix][wet], rtol=1e-6)
+        assert np.all(np.isnan(flat[~wet]))
+    np.testing.assert_array_equal(g['face'][:], np.arange(13))
+    np.testing.assert_array_equal(g['j'][:], np.arange(FS))
+
+    # Idempotent: a second run skips everything.
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'],
+                                   mask_dir=mask_dir, FS=FS)
+    assert stats['written'] == 0 and stats['skipped'] == 5
+
+    # Asking for an extra variable makes the stores "incomplete" -> rewritten.
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS', 'Eta'],
+                                   mask_dir=mask_dir, FS=FS, limit=1)
+    assert stats['written'] == 1 and stats['skipped'] == 0
+    g = zarr.open_group(str(dest / '20230101T01.zarr'), mode='r', use_consolidated=False)
+    assert g.attrs['variables'] == ['Eta', 'Salt', 'Theta']
+
+    # A store with complete=False is rewritten.
+    g = zarr.open_group(str(dest / s.store_name), mode='a', use_consolidated=False)
+    g.attrs['complete'] = False
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST', 'SSS'],
+                                   mask_dir=mask_dir, FS=FS)
+    assert stats['written'] == 1 and stats['skipped'] == 4
+
+    # Without a mask dir, exact zeros become NaN -- identical result here.
+    dest2 = tmp_path / 'dest2'
+    stats = llc_v2.extract_surface(out_dir, str(dest2), fields=['SST'], FS=FS, limit=2,
+                                   write_grid=False)
+    assert stats['written'] == 2
+    assert sorted(p.name for p in dest2.iterdir()) == ['20230101T01.zarr', '20230101T02.zarr']
+    g2 = zarr.open_group(str(dest2 / '20230101T01.zarr'), mode='r', use_consolidated=False)
+    g1 = zarr.open_group(str(dest / '20230101T01.zarr'), mode='r', use_consolidated=False)
+    np.testing.assert_array_equal(g2['Theta'][:], g1['Theta'][:])
+
+    # A requested field that is missing on disk: store written, left incomplete.
+    with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+        stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'dest3'), fields=['SST', 'SSU'],
+                                       FS=FS, limit=1, write_grid=False)
+    assert stats == {'discovered': 1, 'written': 0, 'skipped': 0, 'incomplete': 1,
+                     'failed': 0, 'dt_seconds': [], 'unreadable_folders': []}
+    g3 = zarr.open_group(str(tmp_path / 'dest3' / '20230101T01.zarr'), mode='r',
+                         use_consolidated=False)
+    assert g3.attrs['complete'] is False and g3.attrs['variables'] == ['Theta']
+    assert 'missing' in caplog.text
+
+    # extract_sst is the SST-only wrapper.
+    stats = llc_v2.extract_sst(out_dir, str(tmp_path / 'dest4'), FS=FS, limit=1, write_grid=False)
+    assert stats['written'] == 1
+
+
+def test_write_grid_store_from_grid_dir(tmp_path):
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(21)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    depth = np.where(rng.random(n) < 0.7, rng.uniform(10, 5000, n), 0.0).astype(np.float32)
+    xc = rng.uniform(-180, 180, n).astype(np.float32)
+    _write_data(grid_dir / 'Depth.data', depth)
+    _write_data(grid_dir / 'XC.data', xc)
+    _write_data(grid_dir / 'RAC.data', np.full(n, 1e6, np.float32))
+    # hFacC with 3 levels: level 0 open where depth > 0.
+    hfac = np.concatenate([(depth > 0).astype(np.float32),
+                           np.zeros(n, np.float32), np.zeros(n, np.float32)])
+    _write_data(grid_dir / 'hFacC.data', hfac)
+    _write_data(grid_dir / 'RC.data', -np.arange(0.5, 3.5))          # 3 levels
+    _write_data(grid_dir / 'RF.data', -np.arange(0.0, 4.0))          # 4 interfaces
+    _write_data(grid_dir / 'YC.data', np.zeros(n // 2, np.float32))  # wrong size -> skipped
+
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert sorted(g.attrs['variables']) == ['Depth', 'RC', 'RF', 'XC', 'hFacC_k0', 'maskC', 'rA']
+    assert any(s.startswith('YC.data (size') for s in g.attrs['skipped'])
+    assert any(s == 'XG.data (missing)' for s in g.attrs['skipped'])
+    assert g.attrs['complete'] is True
+    np.testing.assert_array_equal(_file_order(g['Depth'][:]), depth)
+    np.testing.assert_array_equal(_file_order(g['XC'][:]), xc)
+    assert g['rA'].attrs['source_file'] == 'RAC.data'
+    assert g['hFacC_k0'].attrs['levels_in_file'] == 3
+    np.testing.assert_array_equal(_file_order(g['maskC'][:]), depth > 0)
+    assert g['maskC'].attrs['source'] == 'hFacC.data level 0 > 0'
+    assert g['RC'].shape == (3,) and tuple(g['RC'].metadata.dimension_names) == ('k',)
+    assert g['RF'].shape == (4,) and tuple(g['RF'].metadata.dimension_names) == ('k_p1',)
+
+    # Mask dir takes precedence for maskC; second call skips a complete store.
+    with pytest.raises(ValueError):
+        llc_v2.write_grid_store(str(tmp_path / 'dest5'), FS=FS)
+    assert llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS) == url
+
+
+def test_s3_filesystem_settings(monkeypatch):
+    pytest.importorskip('s3fs')
+    monkeypatch.setenv('ENDPOINT_URL', 'https://example.invalid')
+    monkeypatch.setenv('AWS_PROFILE', 'nautilus-test')
+    fs = llc_v2.s3_filesystem(asynchronous=False)
+    assert fs.client_kwargs['endpoint_url'] == 'https://example.invalid'
+    assert fs.config_kwargs['s3']['addressing_style'] == 'path'
+    assert fs.kwargs['profile'] == 'nautilus-test'   # forwarded to AioSession(profile=)
+    # Explicit args win over the environment.
+    fs2 = llc_v2.s3_filesystem(endpoint='https://s3-west.nrp-nautilus.io/',
+                               profile='other', asynchronous=False)
+    assert fs2.client_kwargs['endpoint_url'] == 'https://s3-west.nrp-nautilus.io'
+    assert fs2.kwargs['profile'] == 'other'
+    assert llc_v2.is_s3('s3://llc4320-v2/SURFACE') and not llc_v2.is_s3('/tmp/x')
+
+
+def test_cli_parser_and_dry_run(tmp_path, capsys):
+    from wrangler.scripts import llc_v2_surface, llc_v2_sst
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    args = llc_v2_surface.parser([out_dir, str(tmp_path / 'd'), '--FS', str(FS), '--dry-run',
+                                  '--start', '2023-01-01T02', '--end', '2023-01-01',
+                                  '--fields', 'SST, SSS,Eta', '--mask-dir', mask_dir])
+    assert args.start == datetime(2023, 1, 1, 2, tzinfo=timezone.utc)
+    assert args.end == datetime(2023, 1, 1, tzinfo=timezone.utc)
+    assert args.fields == ['SST', 'SSS', 'Eta'] and args.mask_dir == mask_dir
+    args = llc_v2_surface.parser([out_dir, str(tmp_path / 'd'), '--FS', str(FS),
+                                  '--dry-run', '--start', '2023-01-01T03'])
+    assert args.fields == ['SST']
+    stats = llc_v2_surface.main(args)
+    assert stats['discovered'] == 3 and stats['written'] == 0
+    assert 'discovered=3' in capsys.readouterr().out
+    # The SST alias exposes the same parser/main.
+    assert llc_v2_sst.parser is llc_v2_surface.parser and llc_v2_sst.main is llc_v2_surface.main
+
+
+NAMELIST = """# Model parameters
+# Continuous equation parameters
+ &PARM01
+ tRef= 51*20.,
+ viscAr=5.6614e-04,
+ &
+# Time stepping parameters
+ &PARM03
+ nIter0=0,
+ nTimeSteps=125280,
+ deltaT=5.,
+ pChkptFreq=626400.,
+ dumpFreq=3600.,
+ &
+"""
+
+
+def _write_eta(path, FS, wet, rng):
+    eta = np.zeros(13 * FS * FS, dtype=np.float32)
+    eta[wet] = rng.normal(0, 0.5, size=int(wet.sum())).astype(np.float32)
+    eta[wet & (eta == 0)] = 0.1
+    with open(path, 'wb') as f:
+        f.write(eta.astype('>f4').tobytes())
+    return llc_v2.compact_to_faces(eta, FS)
+
+
+def test_read_data_field(tmp_path):
+    rng = np.random.default_rng(11)
+    wet = rng.random(13 * FS * FS) < 0.6
+    path = tmp_path / 'Eta.0000000720.data'
+    eta = _write_eta(path, FS, wet, rng)
+    back = llc_v2.read_data_field(str(path), FS)
+    assert back.shape == (13, FS, FS) and back.dtype == np.float32
+    np.testing.assert_array_equal(back, eta)
+    with pytest.raises(ValueError):
+        llc_v2.read_data_field(str(path), FS + 8)      # wrong FS
+    with pytest.raises(ValueError):
+        llc_v2.read_data_field(str(path), FS, level=1)  # only one level
+
+
+def test_read_data_namelist(tmp_path):
+    assert llc_v2.read_data_namelist(str(tmp_path)) == {}   # no `data` file
+    (tmp_path / 'data').write_text(NAMELIST)
+    nml = llc_v2.read_data_namelist(str(tmp_path))
+    assert nml['deltaT'] == 5.0
+    assert nml['nIter0'] == 0.0
+    assert nml['nTimeSteps'] == 125280.0
+    assert nml['dumpFreq'] == 3600.0
+    assert 'startTime' not in nml
+    # Several assignments per line, D exponents, case-insensitive keys.
+    (tmp_path / 'data').write_text(" &PARM03\n NITER0=1440, deltat=2.5D1, startTime=0.,\n &\n")
+    nml = llc_v2.read_data_namelist(str(tmp_path))
+    assert nml == {'deltaT': 25.0, 'nIter0': 1440.0, 'startTime': 0.0}
+
+
+def test_read_stdout_and_run_params(tmp_path):
+    assert llc_v2.read_stdout_params(str(tmp_path)) == {}
+    assert llc_v2.read_run_params(str(tmp_path)) == {'source': None}
+    (tmp_path / 'STDOUT.0000').write_text(
+        "(PID.TID 0000.0001) // =======================================================\n"
+        "(PID.TID 0000.0001) > nIter0=125280,\n"
+        "(PID.TID 0000.0001) > deltaT=20.,\n"
+        "(PID.TID 0000.0001) deltaT =  2.000000000000000E+01 /* Time step ( s ) */\n"
+        "(PID.TID 0000.0001) nIter0 =        125280 /* Run starting timestep number */\n")
+    so = llc_v2.read_stdout_params(str(tmp_path))
+    assert so['deltaT'] == 20.0 and so['nIter0'] == 125280.0
+    # data wins where present; STDOUT fills the rest.
+    (tmp_path / 'data').write_text(" &PARM03\n deltaT=20.,\n &\n")
+    prm = llc_v2.read_run_params(str(tmp_path))
+    assert prm['deltaT'] == 20.0 and prm['nIter0'] == 125280.0
+    assert prm['source'] == 'data+STDOUT'
+    (tmp_path / 'data').unlink()
+    assert llc_v2.read_run_params(str(tmp_path))['source'] == 'STDOUT'
+
+
+def test_discover_warns_when_namelist_disagrees(tmp_path, caplog):
+    out_dir, _, _ = _make_out_tree(tmp_path)
+    folder = os.path.join(out_dir, SEG1[0])
+    # Files sit at iterations 720, 1440, 2160 = +1, +2, +3 h at deltaT=5 s.
+    # Claim deltaT=25 s: first file would be at +5 h -> disagreement warning.
+    with open(os.path.join(folder, 'data'), 'w') as f:
+        f.write(" &PARM03\n nIter0=0,\n deltaT=25.,\n &\n")
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'SST')
+    assert [s.date.hour for s in steps] == [1, 2, 3, 4, 5]     # dates unchanged
+    assert 'numbering convention: UNMATCHED' in caplog.text
+    assert 'disagrees' in caplog.text
+    # Relative-to-nIter0 numbering is also accepted: folder 2's files are at
+    # 2520, 2880 with nIter0=2160, deltaT=10 (absolute).  Rewrite them as
+    # relative (360, 720) and point STDOUT at the same parameters.
+    caplog.clear()
+    f2 = os.path.join(out_dir, SEG2[0])
+    for old_it, new_it in ((2520, 360), (2880, 720)):
+        for fn in os.listdir(f2):
+            if f'.{old_it:010d}.' in fn:
+                os.rename(os.path.join(f2, fn), os.path.join(f2, fn.replace(f'{old_it:010d}', f'{new_it:010d}')))
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        steps = llc_v2.discover_timesteps(out_dir, 'SST')
+    assert [s.date.hour for s in steps] == [1, 2, 3, 4, 5]
+    assert 'numbering convention: relative-to-nIter0' in caplog.text
+
+
+def test_inspect_cli(tmp_path, capsys):
+    pytest.importorskip('zarr')
+    from wrangler.scripts import llc_v2_inspect
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir, FS=FS,
+                           limit=1, write_grid=False)
+    store = str(dest / '20230101T01.zarr')
+    wet = truth['wet']
+
+    # The real Eta file from the same folder/iteration: same land pattern -> OK.
+    eta_ok = os.path.join(out_dir, SEG1[0], 'Eta.0000000720.data')
+    res = llc_v2_inspect.main(llc_v2_inspect.parser([store, '--eta', eta_ok, '--FS', str(FS)]))
+    out = capsys.readouterr().out
+    assert res['n_wet'] == int(wet.sum()) and res['n_bad'] == 0
+    assert res['eta_wet_but_field_nan'] == 0.0 and res['field_wet_but_eta_zero'] == 0.0
+    assert 'value check: OK' in out and 'mask check: OK' in out
+    assert 'selected_iteration: 720' in out and 'selected_date_utc: 2023-01-01 01:00:00' in out
+
+    # Eta with a shuffled wet pattern -> MISMATCH.
+    rng = np.random.default_rng(5)
+    eta_bad = tmp_path / 'Eta.bad.data'
+    _write_eta(eta_bad, FS, rng.permutation(wet), rng)
+    res = llc_v2_inspect.main(llc_v2_inspect.parser([store, '--eta', str(eta_bad), '--FS', str(FS)]))
+    assert res['eta_wet_but_field_nan'] > 0.1
+    assert 'MISMATCH' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Inventory (step 2 on Pleiades found no Theta.*.shrunk files)
+# ---------------------------------------------------------------------------
+
+def _touch(path):
+    open(path, 'wb').close()
+
+
+def test_inventory_and_summary(tmp_path, capsys):
+    out_dir = tmp_path / 'OUT'
+    out_dir.mkdir()
+    # Folder A: namelists + 2D .data only (what step 2 saw).
+    a = out_dir / '2023_01_01_000000_to_2023_01_08_060000'
+    a.mkdir()
+    for fn in ('data', 'data.cal', 'data.exch2_36x36x113847', 'data.kpp'):
+        _touch(a / fn)
+    for h in range(1, 4):
+        _touch(a / f'Eta.{720 * h:010d}.data')
+        _touch(a / f'Eta.{720 * h:010d}.meta')
+        _touch(a / f'oceQnet.{720 * h:010d}.data')
+    (a / 'pickups').mkdir()
+    # Folder B: also has shrunk 3D fields.
+    b = out_dir / '2023_03_27_000000_to_2023_03_30_000000'
+    b.mkdir()
+    for h in range(1, 3):
+        _touch(b / f'Eta.{720 * h:010d}.data')
+        for fld in ('U', 'V', 'Theta', 'Salt'):
+            _touch(b / f'{fld}.{720 * h:010d}.shrunk')
+    (out_dir / 'matlab_v0').mkdir()               # ignored: not an output folder
+    _touch(out_dir / 'Theta.0000000720.shrunk')   # ignored: not inside a folder
+
+    invs = llc_v2.inventory(str(out_dir))
+    assert [os.path.basename(i.folder) for i in invs] == [a.name, b.name]
+    ia, ib = invs
+    assert ia.n_files == 4 + 9 + 1
+    assert ia.fields[('Eta', 'data')] == (3, 720, 2160)
+    assert ia.fields[('Eta', 'meta')] == (3, 720, 2160)
+    assert ia.fields_with_ext('shrunk') == []
+    assert ia.fields_with_ext('data') == ['Eta', 'oceQnet']
+    assert 'pickups/' in ia.other and 'data.cal' in ia.other
+    assert ib.fields_with_ext('shrunk') == ['Salt', 'Theta', 'U', 'V']
+    assert ib.has('Theta', 'shrunk') and not ia.has('Theta', 'shrunk')
+
+    summ = llc_v2.summarize_inventory(invs, 'Theta', 'shrunk')
+    assert summ['n_folders'] == 2 and summ['with_field'] == 1
+    assert summ['first_with'] == datetime(2023, 3, 27, 1, tzinfo=timezone.utc)  # first file = start + 1 h
+    assert summ['last_with'] == datetime(2023, 3, 30, tzinfo=timezone.utc)
+    assert summ['without_field'] == [a.name]
+    assert summ['combos'][('Eta', 'data')] == 2
+    assert summ['combos'][('Theta', 'shrunk')] == 1
+
+    assert llc_v2.inventory(str(out_dir), max_folders=1)[0].folder == str(a)
+
+    # Bounded find: depth 1 sees only the stray file, depth 2 also folder B's.
+    hits, total = llc_v2.find_files(str(out_dir), '.shrunk', max_depth=1)
+    assert total == 1 and hits[0].endswith('Theta.0000000720.shrunk')
+    hits, total = llc_v2.find_files(str(out_dir), '.shrunk', max_depth=2, limit=3)
+    assert total == 9 and len(hits) == 3
+
+    # CLI
+    from wrangler.scripts import llc_v2_inventory
+    summ2 = llc_v2_inventory.main(llc_v2_inventory.parser(
+        [str(out_dir), '--field', 'Theta', '--ext', 'shrunk', '--find', str(out_dir), '--depth', '2']))
+    out = capsys.readouterr().out
+    assert summ2 == {**summ, 'unreadable': []}
+    assert 'shrunk:[-]  data:[Eta,oceQnet]' in out
+    assert 'shrunk:[Salt,Theta,U,V]' in out
+    assert 'with Theta.*.shrunk: 1   (2023-03-27 01:00 to 2023-03-30 00:00)' in out
+    assert f'folders lacking it: {a.name}' in out
+    assert '*.shrunk files under' in out and ': 9' in out
+
+
+# ---------------------------------------------------------------------------
+# Permission errors on Pleiades (2026-09-10): an unlistable newest folder and
+# an unreadable `data` entry must be skipped, not crash the run.
+# ---------------------------------------------------------------------------
+
+import stat
+import contextlib
+
+
+@contextlib.contextmanager
+def _no_access(*paths):
+    """Temporarily chmod 000 the given paths (restored afterwards for cleanup)."""
+    saved = [(p, os.stat(p).st_mode) for p in paths]
+    try:
+        for p, _ in saved:
+            os.chmod(p, 0)
+        yield
+    finally:
+        for p, mode in saved:
+            os.chmod(p, mode)
+
+
+@pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0,
+                    reason="chmod 000 does not block root")
+def test_permission_errors_are_skipped(tmp_path, caplog):
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    f1 = os.path.join(out_dir, SEG1[0])
+    f2 = os.path.join(out_dir, SEG2[0])
+    # Folder 1: replace the `data` namelist by an unreadable *directory* named
+    # data/ (as on Pleiades) and make STDOUT unreadable too.
+    os.remove(os.path.join(f1, 'data'))
+    os.mkdir(os.path.join(f1, 'data'))
+    open(os.path.join(f1, 'STDOUT.0000'), 'w').write("(PID.TID 0000.0001) > deltaT=5.,\n")
+    # Folder 2 (the "newest, still being written" one): not listable at all.
+    with _no_access(os.path.join(f1, 'data'), os.path.join(f1, 'STDOUT.0000'), f2):
+        with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+            # Parameter readers: no crash, empty results.
+            assert llc_v2.read_data_namelist(f1) == {}
+            assert llc_v2.read_stdout_params(f1) == {}
+            assert llc_v2.read_run_params(f1) == {'source': None}
+
+            # Discovery: folder 2 skipped and reported; folder 1 still dated.
+            unreadable = []
+            steps = llc_v2.discover_timesteps(out_dir, 'SST', unreadable=unreadable)
+            assert [s.date.hour for s in steps] == [1, 2, 3]
+            assert unreadable == [f2]
+
+            # Inventory: same.
+            unreadable = []
+            invs = llc_v2.inventory(out_dir, unreadable=unreadable)
+            assert [os.path.basename(i.folder) for i in invs] == [SEG1[0]]
+            assert unreadable == [f2]
+            assert 'data/' in invs[0].other
+
+            # Dry run and pipeline stats.
+            stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'd'), FS=FS, dry_run=True)
+            assert stats['discovered'] == 3
+            assert stats['unreadable_folders'] == [SEG2[0]]
+        assert caplog.text.count('cannot list folder') >= 2
+        assert 'cannot read STDOUT' in caplog.text
+
+        # CLI summaries mention the skipped folder.
+        from wrangler.scripts import llc_v2_inventory, llc_v2_surface
+        import io, contextlib as _cl
+        buf = io.StringIO()
+        with _cl.redirect_stdout(buf):
+            summ = llc_v2_inventory.main(llc_v2_inventory.parser([out_dir, '--quiet']))
+        assert summ['unreadable'] == [SEG2[0]]
+        assert 'unreadable (permission denied), skipped: 1' in buf.getvalue()
+        buf = io.StringIO()
+        with _cl.redirect_stdout(buf):
+            llc_v2_surface.main(llc_v2_surface.parser([out_dir, str(tmp_path / 'd'), '--FS', str(FS),
+                                                       '--dry-run']))
+        assert 'unreadable_folders=1' in buf.getvalue() and SEG2[0] in buf.getvalue()
+
+    # An unreadable *field file* is treated as missing (store left incomplete).
+    pytest.importorskip('zarr')
+    sst0 = os.path.join(f1, 'SST.0000000720.data')
+    with _no_access(sst0):
+        with caplog.at_level('WARNING', logger='wrangler.ogcm.llc_v2'):
+            stats = llc_v2.extract_surface(out_dir, str(tmp_path / 'e'), fields=['SST', 'SSS'],
+                                           FS=FS, limit=1, write_grid=False)
+    assert stats['incomplete'] == 1 and stats['written'] == 0
+    assert 'treated as missing' in caplog.text
+
+    # An unreadable grid file is recorded in `skipped`, the rest is written.
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    n = 13 * FS * FS
+    _write_data(grid_dir / 'Depth.data', np.where(truth['wet'], 100.0, 0.0).astype(np.float32))
+    _write_data(grid_dir / 'XC.data', np.zeros(n, np.float32))
+    with _no_access(str(grid_dir / 'XC.data')):
+        url = llc_v2.write_grid_store(str(tmp_path / 'g'), grid_dir=str(grid_dir), FS=FS)
+    import zarr
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['variables'] == ['Depth', 'maskC']
+    assert any(s.startswith('XC.data (Permission denied') for s in g.attrs['skipped'])
+
+
+# ---------------------------------------------------------------------------
+# Repairing stores written before the face-order fix
+# ---------------------------------------------------------------------------
+
+def _make_legacy(store):
+    """Turn a correctly written store into what the pre-fix code wrote."""
+    import zarr
+    g = zarr.open_group(store, mode='a')
+    for v in llc_v2._face_variables(g, FS):
+        z = g[v]
+        z[7:13] = llc_v2._faces_to_facets(z[7:13])
+        z.attrs.pop('face_layout', None)
+    g.attrs.pop('face_layout', None)
+
+
+def test_facet_helpers_match_compact_to_faces():
+    flat = np.arange(13 * FS * FS, dtype=np.float32).reshape(13, FS, FS)
+    np.testing.assert_array_equal(llc_v2._facets_to_faces(flat[7:]),
+                                  llc_v2.compact_to_faces(flat)[7:])
+    np.testing.assert_array_equal(llc_v2._faces_to_facets(llc_v2._facets_to_faces(flat[7:])),
+                                  flat[7:])
+
+
+def test_repair_store_faces(tmp_path):
+    zarr = pytest.importorskip('zarr')
+    out_dir, mask_dir, truth = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir, FS=FS, limit=3)
+    stores = [str(dest / f'20230101T0{h}.zarr') for h in (1, 2, 3)]
+    good = {s: zarr.open_group(s, mode='r')['Theta'][:] for s in stores}
+    masks = llc_v2.wet_masks_for_repair(str(dest / 'grid.zarr'))
+    backups = tmp_path / 'bk'
+
+    # a correctly written store: nothing to do
+    assert llc_v2.repair_store_faces(stores[0], masks) == 'already'
+
+    for s in stores:
+        _make_legacy(s)
+    legacy = zarr.open_group(stores[0], mode='r')['Theta'][:]
+    assert not np.array_equal(legacy, good[stores[0]], equal_nan=True)
+    # the reader already sees through it
+    np.testing.assert_array_equal(llc_v2.stored_faces(zarr.open_group(stores[0], mode='r'), 'Theta'),
+                                  good[stores[0]])
+
+    # dry run: classified, nothing written
+    assert llc_v2.repair_store_faces(stores[0], masks, dry_run=True) == 'would-repair'
+    np.testing.assert_array_equal(zarr.open_group(stores[0], mode='r')['Theta'][:], legacy)
+
+    # repair, then idempotent
+    assert llc_v2.repair_store_faces(stores[0], masks, backup_dir=str(backups)) == 'repaired'
+    g = zarr.open_group(stores[0], mode='r')
+    np.testing.assert_array_equal(g['Theta'][:], good[stores[0]])
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT and g.attrs['complete'] is True
+    assert llc_v2.repair_store_faces(stores[0], masks) == 'already'
+    assert not os.listdir(backups)
+
+    # interrupted run: the faces were half rewritten, the backup holds the originals
+    import zarr as _z
+    gz = _z.open_group(stores[1], mode='a')
+    np.save(backups / f'{os.path.basename(stores[1])}.Theta.npy', gz['Theta'][7:13])
+    half = gz['Theta'][7:13]
+    half[:3] = llc_v2._facets_to_faces(half)[:3]
+    gz['Theta'][7:13] = half
+    assert llc_v2.classify_face_layout(half, masks['maskC']) == llc_v2.UNKNOWN
+    assert llc_v2.repair_store_faces(stores[1], masks, backup_dir=str(backups)) == 'repaired'
+    np.testing.assert_array_equal(_z.open_group(stores[1], mode='r')['Theta'][:], good[stores[1]])
+    assert not os.listdir(backups)
+
+    # data already in true order but unmarked: only the attribute is added (never permuted twice)
+    gz = _z.open_group(stores[2], mode='a')
+    gz['Theta'][7:13] = good[stores[2]][7:13]
+    assert llc_v2.repair_store_faces(stores[2], masks) == 'marked'
+    np.testing.assert_array_equal(_z.open_group(stores[2], mode='r')['Theta'][:], good[stores[2]])
+
+    # an unrecognisable NaN pattern is left alone
+    s4 = str(tmp_path / 'odd.zarr')
+    root = _z.open_group(s4, mode='w')
+    root.attrs.update({'FS': FS, 'variables': ['Theta'], 'selected_iteration': 1})
+    a = root.create_array('Theta', shape=(13, FS, FS), chunks=(1, FS, FS), dtype='f4',
+                          fill_value=np.nan)
+    rnd = np.random.default_rng(1).random((13, FS, FS)).astype(np.float32)
+    rnd[rnd < 0.4] = np.nan
+    a[:] = rnd
+    assert llc_v2.repair_store_faces(s4, masks).startswith('unknown')
+    np.testing.assert_array_equal(a[:], rnd)
+
+
+def test_repair_grid_store(tmp_path):
+    zarr = pytest.importorskip('zarr')
+    j = np.arange(FS, dtype=np.float32)[:, None]
+    i = np.arange(FS, dtype=np.float32)[None, :]
+    yc = np.stack([np.broadcast_to(10.0 * f + 0.02 * j + 0.001 * i, (FS, FS)) for f in range(13)])
+    mask = np.random.default_rng(2).random((13, FS, FS)) < 0.6
+    url = str(tmp_path / 'grid.zarr')
+    g = zarr.open_group(url, mode='w')
+    g.attrs.update({'FS': FS, 'variables': ['YC', 'maskC', 'RC']})
+    for name, arr in (('YC', yc), ('maskC', mask)):
+        z = g.create_array(name, shape=arr.shape, chunks=(1, FS, FS), dtype=arr.dtype)
+        z[:] = arr
+    g.create_array('RC', shape=(5,), dtype='f4')[:] = np.arange(5)
+    _make_legacy(url)
+    assert llc_v2.classify_face_layout(g['YC'][7:13], yc_7_12=g['YC'][7:13]) == llc_v2.LEGACY
+    assert llc_v2.repair_store_faces(url, backup_dir=str(tmp_path / 'bk')) == 'repaired'
+    g = zarr.open_group(url, mode='r')
+    np.testing.assert_array_equal(g['YC'][:], yc)
+    np.testing.assert_array_equal(g['maskC'][:], mask)
+    assert llc_v2.classify_face_layout(g['YC'][7:13], yc_7_12=g['YC'][7:13]) == llc_v2.FIXED
+    assert llc_v2.repair_store_faces(url) == 'already'
+
+
+def test_fix_faces_cli(tmp_path, capsys):
+    pytest.importorskip('zarr')
+    from wrangler.scripts import llc_v2_fix_faces
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir, FS=FS)
+    for name in os.listdir(dest):
+        if name[:8].isdigit():
+            _make_legacy(str(dest / name))
+    common = [str(dest), '--backup-dir', str(tmp_path / 'bk')]
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--dry-run']))
+    assert counts == {'would-repair': 5}
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--limit', '2', '--workers', '2']))
+    assert counts == {'repaired': 2}
+    counts = llc_v2_fix_faces.main(llc_v2_fix_faces.parser(common + ['--start', '20230101T02']))
+    assert counts == {'already': 1, 'repaired': 3}
+    assert 'grid.zarr: already' in capsys.readouterr().out
+
+
+def test_write_grid_store_rebuilds_legacy_layout(tmp_path, caplog):
+    """A complete grid.zarr lacking face_layout must be rebuilt, not skipped."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(31)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    depth = np.where(rng.random(n) < 0.7, rng.uniform(10, 5000, n), 0.0).astype(np.float32)
+    _write_data(grid_dir / 'Depth.data', depth)
+    dest = tmp_path / 'dest'
+
+    url = llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
+
+    # A current store is skipped.
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    assert 'complete, skipping' in caplog.text
+
+    # Strip the attribute to mimic a store written before the fix: it must be
+    # rebuilt, and come back with the attribute and the right values.
+    caplog.clear()
+    g = zarr.open_group(url, mode='a', use_consolidated=False)
+    del g.attrs['face_layout']
+    g['Depth'][:] = 0.0                      # prove it really was rewritten
+    with caplog.at_level('INFO', logger='wrangler.ogcm.llc_v2'):
+        llc_v2.write_grid_store(str(dest), grid_dir=str(grid_dir), FS=FS)
+    assert 'predates the face-layout fix; rebuilding' in caplog.text
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert g.attrs['face_layout'] == llc_v2.FACE_LAYOUT
+    np.testing.assert_array_equal(llc_v2.stored_faces(g, 'Depth'),
+                                  llc_v2.compact_to_faces(depth.reshape(13, FS, FS)))
+
+
+def test_write_failure_is_not_fatal(tmp_path, monkeypatch, caplog):
+    """A failing store write is retried, then skipped -- the run must not abort."""
+    pytest.importorskip('zarr')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    real = llc_v2.write_timestep_store
+    calls = {'n': 0}
+
+    def flaky(dest_, step, fields, **kw):
+        calls['n'] += 1
+        if step.store_name == '20230101T02.zarr':      # this one always fails
+            raise PermissionError(None)
+        return real(dest_, step, fields, **kw)
+
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', flaky)
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], FS=FS,
+                                   write_grid=False, max_retries=3, retry_wait=0)
+    # Four of five stores written; the bad one counted as failed, not fatal.
+    assert stats['written'] == 4 and stats['failed'] == 1
+    assert sorted(p.name for p in dest.iterdir()) == [
+        '20230101T01.zarr', '20230101T03.zarr', '20230101T04.zarr', '20230101T05.zarr']
+    assert 'retry 1/2' in caplog.text and 'retry 2/2' in caplog.text
+    assert 'failed after 3 attempts' in caplog.text
+    assert '1 store(s) failed to write' in caplog.text
+    assert calls['n'] == 4 + 3                          # 4 good + 3 attempts on the bad one
+
+    # A later run picks up the store that failed.
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', real)
+    stats = llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], FS=FS,
+                                   write_grid=False)
+    assert stats['written'] == 1 and stats['skipped'] == 4 and stats['failed'] == 0
+    assert (dest / '20230101T02.zarr').exists()
+
+
+def test_write_succeeds_on_retry(tmp_path, monkeypatch, caplog):
+    """A transient failure is retried and the store is written normally."""
+    pytest.importorskip('zarr')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    real = llc_v2.write_timestep_store
+    state = {'failed_once': False}
+
+    def flaky(dest_, step, fields, **kw):
+        if not state['failed_once']:
+            state['failed_once'] = True
+            raise PermissionError(None)                 # one transient 403
+        return real(dest_, step, fields, **kw)
+
+    monkeypatch.setattr(llc_v2, 'write_timestep_store', flaky)
+    stats = llc_v2.extract_surface(out_dir, str(dest := tmp_path / 'd'), fields=['SST'],
+                                   FS=FS, write_grid=False, retry_wait=0)
+    assert stats['written'] == 5 and stats['failed'] == 0
+    assert 'retry 1/' in caplog.text
+    assert len(list(dest.iterdir())) == 5
+
+
+def test_consolidate_store_records_members(tmp_path):
+    """Consolidation must capture the arrays, not write an empty member list.
+
+    Regression: the first version used the async fsspec store, whose listing
+    comes back empty over S3, so it wrote consolidated metadata with zero
+    members and readers using the default `consolidated=None` saw an empty
+    store.
+    """
+    zarr = pytest.importorskip('zarr')
+    xr = pytest.importorskip('xarray')
+    out_dir, mask_dir, _ = _make_out_tree(tmp_path)
+    dest = tmp_path / 'dest'
+    llc_v2.extract_surface(out_dir, str(dest), fields=['SST'], mask_dir=mask_dir,
+                           FS=FS, limit=1, write_grid=False)
+    url = str(dest / '20230101T01.zarr')
+
+    assert llc_v2.consolidate_store(url) is True
+    meta = json.loads((dest / '20230101T01.zarr' / 'zarr.json').read_text())
+    members = (meta.get('consolidated_metadata') or {}).get('metadata', {})
+    assert set(members) >= {'Theta', 'face', 'j', 'i'}, members
+
+    # The default read path (consolidated=None) must see the variable.
+    ds = xr.open_zarr(url, consolidated=None)
+    assert list(ds.data_vars) == ['Theta'] and ds.sizes['face'] == 13
+
+    # And a store written by the pipeline is consolidated already.
+    ds2 = xr.open_zarr(str(dest / '20230101T01.zarr'), consolidated=True)
+    assert list(ds2.data_vars) == ['Theta']
+
+
+# ---------------------------------------------------------------------------
+# Arakawa C-grid staggering (Lauren's report, 2026-10-20)
+# ---------------------------------------------------------------------------
+
+def test_var_hdims_matches_v1_convention():
+    """Staggering must match what v1's xmitgcm-derived grid.zarr declares."""
+    assert llc_v2.var_hdims('XG') == ('j_g', 'i_g')
+    assert llc_v2.var_hdims('YG') == ('j_g', 'i_g')
+    assert llc_v2.var_hdims('rAz') == ('j_g', 'i_g')
+    for v in ('dxC', 'dyG', 'rAw', 'hFacW_k0', 'U', 'oceTAUX'):
+        assert llc_v2.var_hdims(v) == ('j', 'i_g'), v        # west face
+    for v in ('dyC', 'dxG', 'rAs', 'hFacS_k0', 'V', 'oceTAUY'):
+        assert llc_v2.var_hdims(v) == ('j_g', 'i'), v        # south face
+    for v in ('XC', 'YC', 'rA', 'Depth', 'CS', 'SN', 'hFacC_k0', 'maskC', 'Theta', 'Salt'):
+        assert llc_v2.var_hdims(v) == ('j', 'i'), v          # centres
+    assert llc_v2.var_hdims('SomethingNew') == ('j', 'i')    # default
+
+
+def test_grid_store_declares_staggering(tmp_path):
+    """A freshly written grid.zarr carries the right dims and COMODO attrs."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(77)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    for fname in ('XC', 'YC', 'XG', 'YG', 'RAC', 'RAS', 'RAW', 'RAZ',
+                  'DXC', 'DYC', 'DXG', 'DYG', 'Depth', 'AngleCS', 'AngleSN'):
+        _write_data(grid_dir / f'{fname}.data', rng.uniform(1, 2, n).astype(np.float32))
+    for fname in ('hFacC', 'hFacS', 'hFacW'):
+        _write_data(grid_dir / f'{fname}.data', np.ones(n, np.float32))
+
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+
+    expect = {'XC': ('face', 'j', 'i'), 'YC': ('face', 'j', 'i'),
+              'XG': ('face', 'j_g', 'i_g'), 'YG': ('face', 'j_g', 'i_g'),
+              'rAz': ('face', 'j_g', 'i_g'),
+              'dxC': ('face', 'j', 'i_g'), 'dyG': ('face', 'j', 'i_g'),
+              'rAw': ('face', 'j', 'i_g'), 'hFacW_k0': ('face', 'j', 'i_g'),
+              'dyC': ('face', 'j_g', 'i'), 'dxG': ('face', 'j_g', 'i'),
+              'rAs': ('face', 'j_g', 'i'), 'hFacS_k0': ('face', 'j_g', 'i'),
+              'rA': ('face', 'j', 'i'), 'Depth': ('face', 'j', 'i'),
+              'CS': ('face', 'j', 'i'), 'SN': ('face', 'j', 'i'),
+              'hFacC_k0': ('face', 'j', 'i'), 'maskC': ('face', 'j', 'i')}
+    for var, dims in expect.items():
+        assert tuple(g[var].metadata.dimension_names) == dims, var
+
+    # All four horizontal dims exist and carry COMODO attributes.
+    for dim in ('i', 'j', 'i_g', 'j_g'):
+        assert dim in g, dim
+        assert g[dim].attrs['axis'] == ('X' if dim.startswith('i') else 'Y')
+    assert g['i_g'].attrs['c_grid_axis_shift'] == -0.5
+    assert g['j_g'].attrs['c_grid_axis_shift'] == -0.5
+    assert 'c_grid_axis_shift' not in dict(g['i'].attrs)
+    assert 'c_grid_axis_shift' not in dict(g['j'].attrs)
+
+
+def test_repair_store_dims(tmp_path):
+    """A legacy all-centres grid store is relabelled without touching data."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(78)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    truth = {}
+    for fname, var in (('XC', 'XC'), ('XG', 'XG'), ('RAZ', 'rAz'),
+                       ('DXC', 'dxC'), ('DYC', 'dyC'), ('Depth', 'Depth')):
+        a = rng.uniform(1, 2, n).astype(np.float32)
+        _write_data(grid_dir / f'{fname}.data', a)
+        truth[var] = llc_v2.compact_to_faces(a.reshape(13, FS, FS))
+
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+
+    # Force the store back to the pre-fix state: everything on (face, j, i),
+    # staggered coords removed.
+    g = zarr.open_group(url, mode='a', use_consolidated=False)
+    for var in ('XG', 'rAz', 'dxC', 'dyC'):
+        llc_v2._set_dimension_names(g, var, ('face', 'j', 'i'))
+    assert tuple(zarr.open_group(url, mode='r', use_consolidated=False)['XG']
+                 .metadata.dimension_names) == ('face', 'j', 'i')
+
+    # Dry run reports without writing.
+    rep = llc_v2.repair_store_dims(url, dry_run=True)
+    assert set(rep['fixed']) == {'XG', 'rAz', 'dxC', 'dyC'}
+    assert 'XC' in rep['already'] and 'Depth' in rep['already']
+    assert tuple(zarr.open_group(url, mode='r', use_consolidated=False)['XG']
+                 .metadata.dimension_names) == ('face', 'j', 'i')
+
+    rep = llc_v2.repair_store_dims(url)
+    assert set(rep['fixed']) == {'XG', 'rAz', 'dxC', 'dyC'}
+    assert set(rep['attrs_set']) >= {'j', 'i', 'j_g', 'i_g'}
+
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert tuple(g['XG'].metadata.dimension_names) == ('face', 'j_g', 'i_g')
+    assert tuple(g['rAz'].metadata.dimension_names) == ('face', 'j_g', 'i_g')
+    assert tuple(g['dxC'].metadata.dimension_names) == ('face', 'j', 'i_g')
+    assert tuple(g['dyC'].metadata.dimension_names) == ('face', 'j_g', 'i')
+    assert tuple(g['XC'].metadata.dimension_names) == ('face', 'j', 'i')
+    assert g['i_g'].attrs['c_grid_axis_shift'] == -0.5
+
+    # The values are untouched.
+    for var, arr in truth.items():
+        np.testing.assert_array_equal(g[var][:], arr, err_msg=var)
+
+    # Idempotent.
+    rep = llc_v2.repair_store_dims(url)
+    assert rep['fixed'] == [] and len(rep['already']) == len(truth) + 1  # +maskC
+
+
+def test_xgcm_can_build_a_grid(tmp_path):
+    """The point of the staggering: xgcm must find X and Y axes in the store.
+
+    Skipped where xgcm is not installed -- it is not a runtime dependency of
+    wrangler, only the thing the C-grid metadata exists to serve.
+    """
+    xgcm = pytest.importorskip('xgcm')
+    xr = pytest.importorskip('xarray')
+    pytest.importorskip('zarr')
+    rng = np.random.default_rng(79)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    for fname in ('XC', 'YC', 'XG', 'YG', 'RAC', 'RAS', 'RAW', 'RAZ',
+                  'DXC', 'DYC', 'DXG', 'DYG', 'Depth', 'AngleCS', 'AngleSN'):
+        _write_data(grid_dir / f'{fname}.data', rng.uniform(1, 2, n).astype(np.float32))
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+
+    ds = xr.open_zarr(url, consolidated=None)
+    grid = xgcm.Grid(ds)                       # axes inferred from COMODO attrs
+    axes = {str(a) for a in grid._ds_grid_info} if hasattr(grid, '_ds_grid_info') \
+        else {str(a) for a in grid.axes}
+    assert {'X', 'Y'} <= axes, axes
+    # Each axis must know both its centre and its shifted position, which is
+    # the whole point of carrying i_g/j_g.
+    for ax, centre, left in (('X', 'i', 'i_g'), ('Y', 'j', 'j_g')):
+        pos = grid.axes[ax].coords if hasattr(grid, 'axes') else {}
+        if pos:
+            assert pos.get('center') == centre and pos.get('left') == left, (ax, pos)

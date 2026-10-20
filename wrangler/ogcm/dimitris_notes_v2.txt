@@ -1,0 +1,24 @@
+A few notes:
+- If you use a “folding” editor, the folding marks are “% {{{“ and “% }}}” at the beginning of a line.
+- This will work for model output on facets 4 and 5 of the llc4320 grid.
+- For 3D fields, I have two separate types of code. The "get and save scalar 3D fields” and "get and save vector 3D fields” sections are matlab-based;. If too slow to your liking, you can use "generate commands to extract scalar 3D fields” and "generate commands to extract vector 3D fields”, which writes out command for using Bron’s extraction routines.
+
+The section of the code that reads and assigns a date to the files is:
+
+cd /nobackupp27/dbwhitt/llc_4320/OUT
+pin=dir('*/U*.shrunk');
+tme=zeros(size(pin));
+pnm=' ';
+for t=1:length(tme)
+    if strcmp(pnm,pin(t).folder)
+        n=n+1;
+    else
+        pnm=pin(t).folder;
+        n=0;
+    end
+    yr=str2num(pnm(35:38));
+    mo=str2num(pnm(40:41));
+    dy=str2num(pnm(43:44));
+    hr=str2num(pnm(46:47));
+    tme(t)=datenum(yr,mo,dy,hr,0,0)+n/24;
+end

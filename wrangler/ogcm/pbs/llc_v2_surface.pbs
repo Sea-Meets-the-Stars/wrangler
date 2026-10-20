@@ -1,0 +1,79 @@
+#PBS -N llc_v2_sst
+#PBS -q long
+#PBS -l select=1:ncpus=4:model=bro
+#PBS -l walltime=120:00:00
+#PBS -j oe
+#PBS -o /nobackupp28/jprochas/llc_v2_logs/llc_v2_sst.$PBS_JOBID.log
+#PBS -m abe
+#
+# LLC4320 v2 surface extraction as a PBS job, for when the PFE reaps the
+# long-running login-node process (it has three times).
+#
+# EDIT BEFORE FIRST USE
+#   -q / -l select / -l walltime  to whatever your allocation allows
+#   #PBS -W group_list=<your group>   add this if your site requires it
+#   PY, REPO, LOGDIR below
+#   DEST: keep the s3:// URL if compute nodes can reach Nautilus; otherwise
+#         set WRITE_LOCAL=1 and mirror from a PFE afterwards (see the bottom).
+#
+# SUBMIT
+#   qsub -v LIMIT=2 wrangler/ogcm/pbs/llc_v2_surface.pbs   # smoke test, 2 stores
+#   qsub wrangler/ogcm/pbs/llc_v2_surface.pbs              # the real run
+#   qstat -u $USER          # status
+#   tail -f $LOGDIR/llc_v2_sst.*.log
+#
+# The run is idempotent: completed stores are skipped, a partly written one is
+# rewritten, so resubmitting after a walltime kill simply continues.
+
+set -u
+
+PY=/home4/jprochas/miniforge3/envs/ocean14/bin/python
+REPO=/home4/jprochas/python/wrangler
+LOGDIR=/nobackupp28/jprochas/llc_v2_logs
+
+OUT=/nobackupp27/dbwhitt/llc_4320/OUT
+MASKDIR=/nobackupp29/bcnelson/MITgcm/compressedOutput/work/bitmask.4320x173
+GRIDDIR=/nobackupp27/dbwhitt/llc_4320/grid_90x90x19493
+
+FIELDS=SST
+LIMIT=${LIMIT:-0}                               # >0 = stop after N stores (smoke test)
+WRITE_LOCAL=0                                   # 1 = write to scratch, mirror later
+SCR=/nobackupp28/jprochas/llc_v2_test
+DEST=s3://llc4320-v2/SURFACE
+[ "$WRITE_LOCAL" = "1" ] && DEST=$SCR/SURFACE
+
+mkdir -p "$LOGDIR"
+cd "$REPO" || exit 1
+
+echo "host        $(hostname)"
+echo "jobid       ${PBS_JOBID:-interactive}"
+echo "started     $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+echo "destination $DEST"
+echo "fields      $FIELDS"
+
+# Credentials for the S3 destination; harmless when writing locally.
+export AWS_PROFILE=${AWS_PROFILE:-default}
+export ENDPOINT_URL=${ENDPOINT_URL:-https://s3-west.nrp-nautilus.io}
+
+# --no-grid: grid.zarr is already correct on the bucket (face_layout llc_faces),
+# so this skips a needless 4.8 GB re-upload on every resubmission. Drop the flag
+# if you ever need the grid rebuilt.
+LIMIT_ARG=""
+[ "$LIMIT" -gt 0 ] 2>/dev/null && LIMIT_ARG="--limit $LIMIT"
+
+"$PY" -m wrangler.scripts.llc_v2_surface "$OUT" "$DEST" \
+    --fields "$FIELDS" \
+    --mask-dir "$MASKDIR" \
+    --grid-dir "$GRIDDIR" \
+    --no-grid $LIMIT_ARG
+status=$?
+
+echo "finished    $(date -u +'%Y-%m-%d %H:%M:%S UTC')  exit=$status"
+
+# If WRITE_LOCAL=1, mirror to Nautilus from a PFE afterwards (compute nodes may
+# have no outbound network):
+#   module load S3/mc
+#   mc alias set nautilus https://s3-west.nrp-nautilus.io <key> <secret>
+#   mc mirror $SCR/SURFACE nautilus/llc4320-v2/SURFACE
+
+exit $status
