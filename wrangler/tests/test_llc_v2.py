@@ -1077,3 +1077,143 @@ def test_consolidate_store_records_members(tmp_path):
     # And a store written by the pipeline is consolidated already.
     ds2 = xr.open_zarr(str(dest / '20230101T01.zarr'), consolidated=True)
     assert list(ds2.data_vars) == ['Theta']
+
+
+# ---------------------------------------------------------------------------
+# Arakawa C-grid staggering (Lauren's report, 2026-10-20)
+# ---------------------------------------------------------------------------
+
+def test_var_hdims_matches_v1_convention():
+    """Staggering must match what v1's xmitgcm-derived grid.zarr declares."""
+    assert llc_v2.var_hdims('XG') == ('j_g', 'i_g')
+    assert llc_v2.var_hdims('YG') == ('j_g', 'i_g')
+    assert llc_v2.var_hdims('rAz') == ('j_g', 'i_g')
+    for v in ('dxC', 'dyG', 'rAw', 'hFacW_k0', 'U', 'oceTAUX'):
+        assert llc_v2.var_hdims(v) == ('j', 'i_g'), v        # west face
+    for v in ('dyC', 'dxG', 'rAs', 'hFacS_k0', 'V', 'oceTAUY'):
+        assert llc_v2.var_hdims(v) == ('j_g', 'i'), v        # south face
+    for v in ('XC', 'YC', 'rA', 'Depth', 'CS', 'SN', 'hFacC_k0', 'maskC', 'Theta', 'Salt'):
+        assert llc_v2.var_hdims(v) == ('j', 'i'), v          # centres
+    assert llc_v2.var_hdims('SomethingNew') == ('j', 'i')    # default
+
+
+def test_grid_store_declares_staggering(tmp_path):
+    """A freshly written grid.zarr carries the right dims and COMODO attrs."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(77)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    for fname in ('XC', 'YC', 'XG', 'YG', 'RAC', 'RAS', 'RAW', 'RAZ',
+                  'DXC', 'DYC', 'DXG', 'DYG', 'Depth', 'AngleCS', 'AngleSN'):
+        _write_data(grid_dir / f'{fname}.data', rng.uniform(1, 2, n).astype(np.float32))
+    for fname in ('hFacC', 'hFacS', 'hFacW'):
+        _write_data(grid_dir / f'{fname}.data', np.ones(n, np.float32))
+
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+
+    expect = {'XC': ('face', 'j', 'i'), 'YC': ('face', 'j', 'i'),
+              'XG': ('face', 'j_g', 'i_g'), 'YG': ('face', 'j_g', 'i_g'),
+              'rAz': ('face', 'j_g', 'i_g'),
+              'dxC': ('face', 'j', 'i_g'), 'dyG': ('face', 'j', 'i_g'),
+              'rAw': ('face', 'j', 'i_g'), 'hFacW_k0': ('face', 'j', 'i_g'),
+              'dyC': ('face', 'j_g', 'i'), 'dxG': ('face', 'j_g', 'i'),
+              'rAs': ('face', 'j_g', 'i'), 'hFacS_k0': ('face', 'j_g', 'i'),
+              'rA': ('face', 'j', 'i'), 'Depth': ('face', 'j', 'i'),
+              'CS': ('face', 'j', 'i'), 'SN': ('face', 'j', 'i'),
+              'hFacC_k0': ('face', 'j', 'i'), 'maskC': ('face', 'j', 'i')}
+    for var, dims in expect.items():
+        assert tuple(g[var].metadata.dimension_names) == dims, var
+
+    # All four horizontal dims exist and carry COMODO attributes.
+    for dim in ('i', 'j', 'i_g', 'j_g'):
+        assert dim in g, dim
+        assert g[dim].attrs['axis'] == ('X' if dim.startswith('i') else 'Y')
+    assert g['i_g'].attrs['c_grid_axis_shift'] == -0.5
+    assert g['j_g'].attrs['c_grid_axis_shift'] == -0.5
+    assert 'c_grid_axis_shift' not in dict(g['i'].attrs)
+    assert 'c_grid_axis_shift' not in dict(g['j'].attrs)
+
+
+def test_repair_store_dims(tmp_path):
+    """A legacy all-centres grid store is relabelled without touching data."""
+    zarr = pytest.importorskip('zarr')
+    rng = np.random.default_rng(78)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    truth = {}
+    for fname, var in (('XC', 'XC'), ('XG', 'XG'), ('RAZ', 'rAz'),
+                       ('DXC', 'dxC'), ('DYC', 'dyC'), ('Depth', 'Depth')):
+        a = rng.uniform(1, 2, n).astype(np.float32)
+        _write_data(grid_dir / f'{fname}.data', a)
+        truth[var] = llc_v2.compact_to_faces(a.reshape(13, FS, FS))
+
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+
+    # Force the store back to the pre-fix state: everything on (face, j, i),
+    # staggered coords removed.
+    g = zarr.open_group(url, mode='a', use_consolidated=False)
+    for var in ('XG', 'rAz', 'dxC', 'dyC'):
+        llc_v2._set_dimension_names(g, var, ('face', 'j', 'i'))
+    assert tuple(zarr.open_group(url, mode='r', use_consolidated=False)['XG']
+                 .metadata.dimension_names) == ('face', 'j', 'i')
+
+    # Dry run reports without writing.
+    rep = llc_v2.repair_store_dims(url, dry_run=True)
+    assert set(rep['fixed']) == {'XG', 'rAz', 'dxC', 'dyC'}
+    assert 'XC' in rep['already'] and 'Depth' in rep['already']
+    assert tuple(zarr.open_group(url, mode='r', use_consolidated=False)['XG']
+                 .metadata.dimension_names) == ('face', 'j', 'i')
+
+    rep = llc_v2.repair_store_dims(url)
+    assert set(rep['fixed']) == {'XG', 'rAz', 'dxC', 'dyC'}
+    assert set(rep['attrs_set']) >= {'j', 'i', 'j_g', 'i_g'}
+
+    g = zarr.open_group(url, mode='r', use_consolidated=False)
+    assert tuple(g['XG'].metadata.dimension_names) == ('face', 'j_g', 'i_g')
+    assert tuple(g['rAz'].metadata.dimension_names) == ('face', 'j_g', 'i_g')
+    assert tuple(g['dxC'].metadata.dimension_names) == ('face', 'j', 'i_g')
+    assert tuple(g['dyC'].metadata.dimension_names) == ('face', 'j_g', 'i')
+    assert tuple(g['XC'].metadata.dimension_names) == ('face', 'j', 'i')
+    assert g['i_g'].attrs['c_grid_axis_shift'] == -0.5
+
+    # The values are untouched.
+    for var, arr in truth.items():
+        np.testing.assert_array_equal(g[var][:], arr, err_msg=var)
+
+    # Idempotent.
+    rep = llc_v2.repair_store_dims(url)
+    assert rep['fixed'] == [] and len(rep['already']) == len(truth) + 1  # +maskC
+
+
+def test_xgcm_can_build_a_grid(tmp_path):
+    """The point of the staggering: xgcm must find X and Y axes in the store.
+
+    Skipped where xgcm is not installed -- it is not a runtime dependency of
+    wrangler, only the thing the C-grid metadata exists to serve.
+    """
+    xgcm = pytest.importorskip('xgcm')
+    xr = pytest.importorskip('xarray')
+    pytest.importorskip('zarr')
+    rng = np.random.default_rng(79)
+    n = 13 * FS * FS
+    grid_dir = tmp_path / 'grid'
+    grid_dir.mkdir()
+    for fname in ('XC', 'YC', 'XG', 'YG', 'RAC', 'RAS', 'RAW', 'RAZ',
+                  'DXC', 'DYC', 'DXG', 'DYG', 'Depth', 'AngleCS', 'AngleSN'):
+        _write_data(grid_dir / f'{fname}.data', rng.uniform(1, 2, n).astype(np.float32))
+    url = llc_v2.write_grid_store(str(tmp_path / 'dest'), grid_dir=str(grid_dir), FS=FS)
+
+    ds = xr.open_zarr(url, consolidated=None)
+    grid = xgcm.Grid(ds)                       # axes inferred from COMODO attrs
+    axes = {str(a) for a in grid._ds_grid_info} if hasattr(grid, '_ds_grid_info') \
+        else {str(a) for a in grid.axes}
+    assert {'X', 'Y'} <= axes, axes
+    # Each axis must know both its centre and its shifted position, which is
+    # the whole point of carrying i_g/j_g.
+    for ax, centre, left in (('X', 'i', 'i_g'), ('Y', 'j', 'j_g')):
+        pos = grid.axes[ax].coords if hasattr(grid, 'axes') else {}
+        if pos:
+            assert pos.get('center') == centre and pos.get('left') == left, (ax, pos)

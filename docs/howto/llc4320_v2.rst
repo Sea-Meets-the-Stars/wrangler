@@ -26,16 +26,35 @@ Endpoint                    ``https://s3-west.nrp-nautilus.io``
 Bucket / prefix             ``s3://llc4320-v2/SURFACE``
 Credentials                 none; the bucket is public and read-only
 Variable                    ``Theta`` -- sea surface temperature, degrees C
-Coverage                    2023-01-01 01:00 to 2024-02-08 20:00 UTC
-Cadence                     hourly, 9,692 snapshots, no gaps
+Coverage                    2023-01-01 01:00 to 2024-01-31 23:00 UTC
+Cadence                     hourly, 9,501 snapshots (two gaps, see below)
 Grid                        native LLC4320: 13 faces of 4320 x 4320
 Store layout                one Zarr store per hour, plus one static grid
 Chunking                    ``(face, j, i) = (1, 720, 720)``, float32
-Size                        about 470 MB per hour, 4.5 TB in total
+Size                        about 470 MB per hour, 4.4 TB in total
 ==========================  =================================================
 
 Land is ``NaN``. The ocean range across the record is roughly -2.6 to
 36.6 degrees C.
+
+.. _llc4320_v2_gaps:
+
+Current gaps
+------------
+
+The record is not yet quite complete. As of 2026-10-14:
+
+* **2023-10-19 03:00** and **2023-12-28 23:00** are missing. Both were lost to
+  a transient outage of the object store while they were being written. They
+  will be refilled.
+* **2024-02-01 00:00 to 2024-02-08 20:00** (189 hours) has not been extracted
+  yet. The raw output for that week sits in a directory belonging to a run that
+  was still in progress, and its files are not yet readable.
+
+Everything else between the dates above is present, complete and contiguous.
+Code that opens a range spanning a gap should tolerate a missing hour;
+:func:`~wrangler.ogcm.llc_v2_access.open_range` skips them with a warning by
+default. This section will be removed when the gaps are filled.
 
 How the data are laid out
 =========================
@@ -56,7 +75,8 @@ writing and for single-time access, and inconvenient for time series, so
 ``grid.zarr`` holds the horizontal grid and the vertical axes:
 
 * positions and geometry: ``XC``, ``YC``, ``XG``, ``YG``, ``rA``, ``rAs``,
-  ``rAw``, ``rAz``, ``dxC``, ``dyC``, ``dxG``, ``dyG``
+  ``rAw``, ``rAz``, ``dxC``, ``dyC``, ``dxG``, ``dyG`` (see the staggering
+  below)
 * bathymetry and masks: ``Depth``, ``maskC``, ``hFacC_k0``, ``hFacS_k0``,
   ``hFacW_k0``
 * grid rotation: ``CS``, ``SN`` (cosine and sine of the grid angle, needed to
@@ -67,6 +87,35 @@ writing and for single-time access, and inconvenient for time series, so
 The horizontal grid is the same as the original LLC4320. The bathymetry,
 land mask, ``hFac`` and vertical grid are **not** -- use this ``grid.zarr``,
 not one from the earlier run.
+
+Staggering: which variable sits where
+-------------------------------------
+
+LLC4320 is an Arakawa C-grid, so not everything lives at cell centres, and
+``grid.zarr`` says so through its dimension names:
+
+====================================  ==============================================
+dimensions                            variables
+====================================  ==============================================
+``(face, j, i)`` cell centres         ``XC`` ``YC`` ``rA`` ``Depth`` ``CS`` ``SN``
+                                      ``hFacC_k0`` ``maskC``, and ``Theta``
+``(face, j, i_g)`` west cell faces    ``dxC`` ``dyG`` ``rAw`` ``hFacW_k0``
+``(face, j_g, i)`` south cell faces   ``dyC`` ``dxG`` ``rAs`` ``hFacS_k0``
+``(face, j_g, i_g)`` cell corners     ``XG`` ``YG`` ``rAz``
+====================================  ==============================================
+
+MITgcm puts ``U`` on the west face and ``V`` on the south face, so both
+staggered axes carry ``c_grid_axis_shift = -0.5`` following the `COMODO
+conventions <http://pycomodo.forge.imag.fr/norm.html>`_, alongside
+``axis = "X"`` or ``"Y"``. Those attributes are written into the store, so
+``xgcm`` finds the axes without any help::
+
+    import xgcm
+    grid = xgcm.Grid(llc.open_grid())       # X and Y, each with centre and left
+
+``Theta`` is a tracer and sits at cell centres. When ``SSU``/``SSV`` are added
+they will land on the west and south faces respectively, which is where their
+``dxC``/``dyC`` spacings already are.
 
 A word about the 13 faces
 -------------------------

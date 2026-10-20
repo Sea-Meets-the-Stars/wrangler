@@ -1078,22 +1078,77 @@ def store_is_complete(store_url: str, variables, endpoint: str = None,
     return bool(g.attrs.get('complete', False)) and all(v in g for v in variables)
 
 
-def _ensure_coords(root, FS: int):
-    """Write the face/j/i index coordinates if not already present (dbof style)."""
-    for name, n, chunk in (('face', N_FACETS, N_FACETS),
-                           ('j', FS, min(FS, SURF_CHUNKS[1])),
-                           ('i', FS, min(FS, SURF_CHUNKS[2]))):
+# ---------------------------------------------------------------------------
+# Arakawa C-grid staggering
+# ---------------------------------------------------------------------------
+#
+# LLC4320 is an Arakawa C-grid: tracers at cell centres, U on the west cell
+# face, V on the south face, vorticity on the corner.  The horizontal
+# dimension names encode that, and xgcm needs both the names and the COMODO
+# attributes below to build a Grid object.  (See docs/Grid.md in the sibling
+# repo llc4320-native-grid-preprocessing, and its `COMODO_COORD_META`.)
+#
+# MITgcm puts U on the *west* face and V on the *south* face, so both
+# staggered axes are shifted by -0.5.
+COMODO_COORD_META = {
+    'j':   {'axis': 'Y'},
+    'j_g': {'axis': 'Y', 'c_grid_axis_shift': -0.5},
+    'i':   {'axis': 'X'},
+    'i_g': {'axis': 'X', 'c_grid_axis_shift': -0.5},
+}
+
+# Variable -> its horizontal dimension pair.  Matches what v1 declares in
+# s3://dbof/LLC4320_RAW/SURFACE/grid.zarr, which is xmitgcm-derived.
+# Anything absent here is a cell-centred tracer, i.e. ('j', 'i').
+CENTRE, WEST, SOUTH, CORNER = ('j', 'i'), ('j', 'i_g'), ('j_g', 'i'), ('j_g', 'i_g')
+VAR_HDIMS = {
+    # corners
+    'XG': CORNER, 'YG': CORNER, 'rAz': CORNER, 'dxV': CORNER, 'dyU': CORNER,
+    # west cell faces (U points)
+    'dxC': WEST, 'dyG': WEST, 'rAw': WEST, 'hFacW': WEST, 'hFacW_k0': WEST,
+    'U': WEST, 'oceTAUX': WEST, 'SIuice': WEST,
+    # south cell faces (V points)
+    'dyC': SOUTH, 'dxG': SOUTH, 'rAs': SOUTH, 'hFacS': SOUTH, 'hFacS_k0': SOUTH,
+    'V': SOUTH, 'oceTAUY': SOUTH, 'SIvice': SOUTH,
+}
+
+
+def var_hdims(name: str):
+    """Horizontal dimension pair for *name*; cell centres unless listed."""
+    return VAR_HDIMS.get(name, CENTRE)
+
+
+def _coord_attrs(name: str) -> dict:
+    """COMODO attributes for a horizontal dimension, or {} for others."""
+    return dict(COMODO_COORD_META.get(name, {}))
+
+
+def _ensure_coords(root, FS: int, dims=('j', 'i')):
+    """Write the face and horizontal index coordinates, with COMODO attributes.
+
+    Args:
+        dims (tuple): the horizontal dimension names needed by the variable
+            about to be written, e.g. ``('j_g', 'i_g')``. Each is created
+            once; the staggered ones appear only when something uses them.
+    """
+    sizes = {'face': (N_FACETS, N_FACETS),
+             'j': (FS, min(FS, SURF_CHUNKS[1])), 'j_g': (FS, min(FS, SURF_CHUNKS[1])),
+             'i': (FS, min(FS, SURF_CHUNKS[2])), 'i_g': (FS, min(FS, SURF_CHUNKS[2]))}
+    for name in ('face',) + tuple(dims):
         if name in root:
             continue
+        n, chunk = sizes[name]
         vals = np.arange(n, dtype=np.int64)
         zc = root.create_array(name, shape=vals.shape, chunks=(chunk,),
                                dtype=vals.dtype, overwrite=True,
                                dimension_names=(name,))
         zc[:] = vals
+        for k, v in _coord_attrs(name).items():
+            zc.attrs[k] = v
 
 
 def write_surface_variable(root, name: str, field: np.ndarray, attrs: dict = None,
-                           chunks=SURF_CHUNKS, verify: bool = True):
+                           chunks=SURF_CHUNKS, verify: bool = True, dims=None):
     """Write one global (13, FS, FS) surface field into an open zarr group.
 
     Args:
@@ -1105,18 +1160,22 @@ def write_surface_variable(root, name: str, field: np.ndarray, attrs: dict = Non
             `SURF_CHUNKS`. Clipped to the field shape for small test grids.
         verify (bool, optional): read every face back and compare (as
             dbof's ``_verify_tile`` does). Defaults to True.
+        dims (tuple, optional): horizontal dimension pair, e.g.
+            ``('j_g', 'i_g')``. Defaults to whatever `var_hdims` says for
+            *name* -- cell centres unless the variable is staggered.
     """
     if field.ndim != 3 or field.shape[0] != N_FACETS:
         raise ValueError(f"expected (13, FS, FS), got {field.shape}")
     FS = field.shape[1]
     chunks = tuple(min(c, s) for c, s in zip(chunks, field.shape))
-    _ensure_coords(root, FS)
+    hdims = tuple(dims) if dims is not None else var_hdims(name)
+    _ensure_coords(root, FS, hdims)
 
     is_float = np.issubdtype(field.dtype, np.floating)
     z = root.create_array(name, shape=field.shape, chunks=chunks,
                           dtype=field.dtype, overwrite=True,
                           fill_value=np.nan if is_float else 0,
-                          dimension_names=('face', 'j', 'i'))
+                          dimension_names=('face',) + hdims)
     for k, v in (attrs or {}).items():
         try:
             z.attrs[k] = v
@@ -1425,6 +1484,102 @@ def write_grid_store(dest: str, grid_dir: str = None, mask_dir: str = None,
     root.attrs['complete'] = 'maskC' in written
     consolidate_store(url, endpoint, profile)
     return url
+
+
+def repair_store_dims(store_url: str, dry_run: bool = False, endpoint: str = None,
+                      profile: str = None) -> dict:
+    """Relabel a store's horizontal dimensions to the true C-grid staggering.
+
+    Stores written before 2026-10-20 declared ``(face, j, i)`` for every
+    variable, so the staggered ones (``XG``/``YG``/``rAz`` on corners,
+    ``dxC``/``dyG``/``rAw``/``hFacW_k0`` on west faces,
+    ``dyC``/``dxG``/``rAs``/``hFacS_k0`` on south faces) claimed to sit at
+    cell centres.  ``xgcm`` cannot build a Grid from such a store.
+
+    This is **metadata only**: the values are already correct and in the
+    correct positions, so no chunk is read or rewritten.  Each misdeclared
+    array's ``dimension_names`` is corrected in place, the staggered index
+    coordinates are added if missing, the COMODO attributes are set on every
+    horizontal dimension present, and the store is re-consolidated.
+
+    Args:
+        store_url (str): local path or ``s3://`` URL of a store.
+        dry_run (bool, optional): report what would change, write nothing.
+
+    Returns:
+        dict: ``{'fixed': [...], 'already': [...], 'coords_added': [...],
+            'attrs_set': [...]}``.
+    """
+    import zarr
+    root = open_zarr_group(store_url, mode='r' if dry_run else 'a',
+                           endpoint=endpoint, profile=profile)
+    FS = int(root.attrs.get('FS', 4320))
+    out = {'fixed': [], 'already': [], 'coords_added': [], 'attrs_set': []}
+
+    # Which 3D (face, y, x) arrays are mislabelled?
+    names = [n for n in _face_variables(root, FS)]
+    wanted = {n: ('face',) + var_hdims(n) for n in names}
+    need = {n: w for n, w in wanted.items()
+            if tuple(root[n].metadata.dimension_names or ()) != w}
+    out['already'] = sorted(set(names) - set(need))
+    if dry_run:
+        out['fixed'] = sorted(need)
+        out['coords_added'] = sorted({d for w in need.values() for d in w[1:]
+                                      if d not in root})
+        return out
+
+    # Staggered index coordinates, created once, with COMODO attributes.
+    for dim in sorted({d for w in wanted.values() for d in w[1:]}):
+        if dim not in root:
+            vals = np.arange(FS, dtype=np.int64)
+            zc = root.create_array(dim, shape=vals.shape,
+                                   chunks=(min(FS, SURF_CHUNKS[1]),),
+                                   dtype=vals.dtype, overwrite=True,
+                                   dimension_names=(dim,))
+            zc[:] = vals
+            out['coords_added'].append(dim)
+    for dim in ('face', 'j', 'j_g', 'i', 'i_g'):
+        if dim in root and (a := _coord_attrs(dim)):
+            for k, v in a.items():
+                root[dim].attrs[k] = v
+            out['attrs_set'].append(dim)
+
+    # Relabel. zarr exposes no setter for dimension_names, so the array's
+    # metadata document is rewritten in place via the store; chunks are
+    # untouched because neither the shape nor the chunk grid changes.
+    for name, w in sorted(need.items()):
+        _set_dimension_names(root, name, w)
+        out['fixed'].append(name)
+
+    consolidate_store(store_url, endpoint, profile)
+    return out
+
+
+def _set_dimension_names(root, name: str, dims) -> None:
+    """Rewrite one array's ``dimension_names`` in place (metadata only)."""
+    import json
+    key = f"{name}/zarr.json"
+    doc = json.loads(_store_get(root, key))
+    doc['dimension_names'] = list(dims)
+    _store_set(root, key, json.dumps(doc).encode())
+
+
+def _store_get(root, key: str) -> bytes:
+    """Read a raw key from a zarr group's store, sync, whatever its flavour."""
+    import zarr
+    store = root.store
+    buf = zarr.core.sync.sync(
+        store.get(key, prototype=zarr.core.buffer.default_buffer_prototype()))
+    if buf is None:
+        raise KeyError(key)
+    return buf.to_bytes()
+
+
+def _store_set(root, key: str, value: bytes) -> None:
+    """Write a raw key into a zarr group's store, sync."""
+    import zarr
+    prototype = zarr.core.buffer.default_buffer_prototype()
+    zarr.core.sync.sync(root.store.set(key, prototype.buffer.from_bytes(value)))
 
 
 def write_timestep_store(dest: str, step: Timestep, fields: dict, complete: bool = True,
