@@ -1,6 +1,7 @@
 # LLC4320 v2 surface fields -- design
 
-**Date:** 2026-10-20. **Status:** agreed design, not yet implemented.
+**Date:** 2026-10-20 (revised the same day after the full inventory of the
+raw tree, section 2.1). **Status:** agreed design, not yet implemented.
 **Audience:** Xavier, and anyone (person or Claude session) who implements
 or runs this later. It stands on its own; the discussion that produced it is
 in `llc4320_v2_other_fields.md` (Q&A 1-13) and the history of the SST
@@ -19,19 +20,26 @@ is inferred it says so.
 The public product `s3://llc4320-v2/SURFACE` holds hourly global sea surface
 temperature (`Theta`) from Dan Whitt's LLC4320 v2 run, 9,501 Zarr stores
 over 2023-01-01 01:00 to 2024-01-31 23:00 UTC, plus `grid.zarr`. This design
-adds every other 2D surface field the run wrote -- `SSS`, `SSU`, `SSV`,
-`Eta`, six surface fluxes and the sea-ice fields -- **into the same hourly
-stores**, without rewriting the `Theta` already there, in **one pass over
-the record run as several processes over disjoint date windows**, and
+adds every other 2D surface field the run wrote -- **twenty of them**:
+`SSS`, `SSU`, `SSV`, `Eta`, `KPPhbl`, `PhiBot`, six surface fluxes, two
+ice-shelf fluxes and six sea-ice fields (section 4.1) -- **into the same
+hourly stores**, without rewriting the `Theta` already there, in **one pass
+over the record run as several processes over disjoint date windows**, and
 closes the 191 missing SST hours.
+
+Two things the 2026-10-20 inventory changed: the raw tree now has **95
+folders, not 83**, so the record is probably longer than the 9,692 hours
+SST was planned for (section 2.1; needs one paste to settle), and twenty
+fields rather than fifteen put **every storage estimate above the 55 TB
+accepted so far** (section 8). Both are decisions for Xavier before launch.
 
 Decisions already taken (Q&A 1-13):
 
 | decision | answer |
 |---|---|
 | Preserve existing data when adding fields | yes: open stores `mode='a'`, create only absent arrays |
-| Which fields | all 2D fields present in every raw folder; one pass |
-| Storage ceiling | 55 TB is acceptable (see section 8: the upper-bound estimate exceeds it) |
+| Which fields | all 2D fields present in every raw folder -- 20 besides SST (section 4.1); one pass |
+| Storage ceiling | 55 TB was accepted; **every estimate for 20 fields exceeds it** (section 8) -- quota or field list to be decided |
 | Parallelism | yes; latency-bound, so more in-flight requests per process *and* several processes |
 | `SSU`/`SSV` | native face-relative components only; rotation documented, not stored |
 | SST gaps | the two outage hours now; the 189-hour block when Dan opens the folder |
@@ -45,9 +53,11 @@ Decisions already taken (Q&A 1-13):
 
 ## 2. The raw source on Pleiades
 
-**Location.** `/nobackupp27/dbwhitt/llc_4320/OUT`, 83 folders named
+**Location.** `/nobackupp27/dbwhitt/llc_4320/OUT`, folders named
 `YYYY_MM_DD_HHMMSS_to_YYYY_MM_DD_HHMMSS` (the simulated interval each run
-segment covers), e.g. `2023_01_01_000000_to_2023_01_08_060000`. Each holds
+segment covers), e.g. `2023_01_01_000000_to_2023_01_08_060000`. There were
+83 readable folders when SST was extracted (84 once the live-run symlink
+became listable); **the 2026-10-20 inventory counts 95** (section 2.1). Each holds
 the segment's MITgcm namelists (`data`, `data.cal`, `data.diagnostics`,
 `data.seaice`, `data.shelfice`, ...), `STDOUT.*`, and one file per output
 hour per field. The last folder, `2024_01_31_230000_to_2024_02_08_200000`,
@@ -57,13 +67,57 @@ not readable by us (189 hours).
 
 **Files.** `<FIELD>.<10-digit iteration>.data`: `SST`, `SSS`, `SSU`, `SSV`
 (the k=0 level of Theta, Salt, U, V -- Dan Whitt, 2026-09-09) and the 2D
-diagnostics `Eta`, `oceQnet`, `oceQsw`, `oceFWflx`, `oceSflux`, `oceTAUX`,
-`oceTAUY`, `SI*`. Every one is **uncompressed MITgcm "compact" format**:
-4320 x 56160 big-endian `real*4`, 970,444,800 bytes, no header, no `.meta`
-file (confirmed 2026-10-20: `ls $F1 | grep -c '\.meta$'` prints 0). The
-compressed `.shrunk` + `hFac*.bits` format exists only for the 3D fields and
-is irrelevant here (the pure-Python decoder in `llc_v2.py` is kept for a
-later depth phase).
+diagnostics `Eta`, `KPPhbl`, `PhiBot`, `oceQnet`, `oceQsw`, `oceFWflx`,
+`oceSflux`, `oceTAUX`, `oceTAUY`, `SHIfwFlx`, `SHIhtFlx`, `SIarea`,
+`SIheff`, `SIhsalt`, `SIhsnow`, `SIuice`, `SIvice` -- **21 prefixes, each
+present in all 95 folders** (inventory of 2026-10-20). Every one is
+**uncompressed MITgcm "compact" format**: 4320 x 56160 big-endian `real*4`,
+970,444,800 bytes, no header, no `.meta` file (confirmed 2026-10-20:
+`ls $F1 | grep -c '\.meta$'` prints 0). The compressed `.shrunk` +
+`hFac*.bits` format exists only for the 3D fields and is irrelevant here
+(the pure-Python decoder in `llc_v2.py` is kept for a later depth phase).
+
+### 2.1 What the 2026-10-20 inventory showed
+
+The `(field, ext) -> number of folders` block of `wr_llc_v2_inventory $OUT`
+(pasted in `llc4320_v2_other_fields.md`, prompt 3) counts **95 folders**
+holding every one of the 21 prefixes above, against 83 (plus one unlistable)
+on 2026-09-24. The paste did not include the tool's first lines -- the
+folder count with the first and last dates, and any unreadable folders --
+so **from here I cannot tell what the extra folders are**. The likely
+reading (inference): Dan's run has continued past 2024-02-08 and new
+segments have landed in `OUT`, roughly eleven of them. At the 4-7 simulated
+days per folder seen so far that would be of order 50-60 more days, i.e.
+**~1,300-1,500 more hours, a record of roughly 11,000 hours** rather than
+9,692. Alternatives that would also give 95: a different `$OUT`, or
+re-run/duplicate segments overlapping dates already covered (which
+`discover_timesteps` would report as `Duplicate dates across folders`).
+
+What it affects: the 9,692-hour span and its count-equals-span proof must
+be re-established for the new tree (the dry run does it: the discovered
+count must equal the hours in the closed interval first-to-last); the SST
+record itself would need extending before SST is "finished"; every storage
+and runtime figure in section 8 scales with the hour count. It does not
+affect the design of the code. The one paste that settles it:
+
+```bash
+wr_llc_v2_inventory $OUT --quiet | head -4          # folders, first..last date, unreadable
+wr_llc_v2_surface $OUT /tmp/x --fields SST --dry-run 2>&1 | grep -E "Discovered|Duplicate|spans .* but holds|unreadable"
+```
+
+**Other file families in the tree, all out of scope for the one-pass run**
+(what they probably are is inference from the names; none is a global
+hourly 2D surface field present throughout the record):
+
+| files | folders | probable meaning |
+|---|---|---|
+| `R_Eta`, `R_SIarea`, `R_SIheff`, `R_SIhsalt`, `R_SIhsnow`, `R_SIuice`, `R_SIvice`, `R_Salt`, `R_Theta`, `R_U`, `R_V` (`R_W`, `R_SaltF`, `R_ThetaF` once) | 5 | a second output stream of the same fields with an `R_` prefix -- restart/pickup-time snapshots or a regional or re-run subset; only 5 segments have it |
+| `EtaF`, `SIheffF`, `SaltF`, `ThetaF`, `SaltFF`, `ThetaFF` | 1-4 | variants written at a different frequency or filtered ("F") during a few segments |
+| `Eta_tide` (57), `Eta_tide_presal` (29) | 57 / 29 | tidal sea-surface-height diagnostics; `presal` presumably from before the salinity-related change that names the run directory `run_sal_*`; together they span 86 of 95 folders, so not a complete record either |
+| `Theta/Salt/U/V/W.shrunk` (39-40), `*.every5.shrunk` (11), `*.sections5deg` (11), `*.bloat` (13-16), `W.level1` (1) | partial | the compressed 3D output and derived products (every 5th level, 5-degree sections, decompressed "bloat" copies); the depth phase, not this one |
+
+The run-time field resolution (section 4.3) ignores all of these because
+they are not present in every folder; nothing needs to exclude them by name.
 
 **Compact layout.** The 13 x 4320 x 4320 points are stored as five facets
 back to back: facets 1-2 (faces 0-5) each `(3*4320, 4320)`, facet 3 (face 6,
@@ -260,28 +314,40 @@ Lustre inferred at ~10 s per store per field.
 ### 4.1 Field table
 
 Raw prefix -> store variable (xmitgcm/dbof names, so v2 reads like v1),
-units, grid location (and hence mask and dims), and time sampling.
+units, grid location (and hence mask and dims), compressibility class
+(section 8) and time sampling. All 21 prefixes are present in all 95
+folders (inventory 2026-10-20). The store variables `SHIfwFlx`, `SHIhtFlx`
+and `SIhsalt` are not yet in `SURFACE_FIELDS` and are added by this work.
 
-| raw prefix | variable | units | location | dims | mask | sampling |
-|---|---|---|---|---|---|---|
-| `SST` | `Theta` | degC | centre | `(face, j, i)` | hFacC | snapshot (done) |
-| `SSS` | `Salt` | psu | centre | `(face, j, i)` | hFacC | snapshot |
-| `SSU` | `U` | m s-1 | west face | `(face, j, i_g)` | hFacW | snapshot |
-| `SSV` | `V` | m s-1 | south face | `(face, j_g, i)` | hFacS | snapshot |
-| `Eta` | `Eta` | m | centre | `(face, j, i)` | hFacC | snapshot |
-| `oceQnet` | `oceQnet` | W m-2 | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `oceQsw` | `oceQsw` | W m-2 | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `oceFWflx` | `oceFWflx` | kg m-2 s-1 | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `oceSflux` | `oceSflux` | g m-2 s-1 | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `oceTAUX` | `oceTAUX` | N m-2 | west face | `(face, j, i_g)` | hFacW | see 4.2 |
-| `oceTAUY` | `oceTAUY` | N m-2 | south face | `(face, j_g, i)` | hFacS | see 4.2 |
-| `SIarea` | `SIarea` | 1 | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `SIheff` | `SIheff` | m | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `SIhsnow` | `SIhsnow` | m | centre | `(face, j, i)` | hFacC | see 4.2 |
-| `SIuice` | `SIuice` | m s-1 | west face | `(face, j, i_g)` | hFacW | see 4.2 |
-| `SIvice` | `SIvice` | m s-1 | south face | `(face, j_g, i)` | hFacS | see 4.2 |
-| `SIhsalt` | `SIhsalt` | g m-2 | centre | `(face, j, i)` | hFacC | if present |
-| `KPPhbl`, `PhiBot` | same | m, m2 s-2 | centre | `(face, j, i)` | hFacC | if present |
+| raw prefix | variable | units | location | dims | mask | class | sampling |
+|---|---|---|---|---|---|---|---|
+| `SST` | `Theta` | degC | centre | `(face, j, i)` | hFacC | dense | snapshot (done) |
+| `SSS` | `Salt` | psu | centre | `(face, j, i)` | hFacC | dense | snapshot |
+| `SSU` | `U` | m s-1 | west face | `(face, j, i_g)` | hFacW | dense | snapshot |
+| `SSV` | `V` | m s-1 | south face | `(face, j_g, i)` | hFacS | dense | snapshot |
+| `Eta` | `Eta` | m | centre | `(face, j, i)` | hFacC | dense | snapshot |
+| `KPPhbl` | `KPPhbl` | m | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `PhiBot` | `PhiBot` | m2 s-2 | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `oceQnet` | `oceQnet` | W m-2 | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `oceQsw` | `oceQsw` | W m-2 | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `oceFWflx` | `oceFWflx` | kg m-2 s-1 | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `oceSflux` | `oceSflux` | g m-2 s-1 | centre | `(face, j, i)` | hFacC | dense | see 4.2 |
+| `oceTAUX` | `oceTAUX` | N m-2 | west face | `(face, j, i_g)` | hFacW | dense | see 4.2 |
+| `oceTAUY` | `oceTAUY` | N m-2 | south face | `(face, j_g, i)` | hFacS | dense | see 4.2 |
+| `SHIfwFlx` | `SHIfwFlx` | kg m-2 s-1 | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SHIhtFlx` | `SHIhtFlx` | W m-2 | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SIarea` | `SIarea` | 1 | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SIheff` | `SIheff` | m | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SIhsnow` | `SIhsnow` | m | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SIhsalt` | `SIhsalt` | g m-2 | centre | `(face, j, i)` | hFacC | sparse | see 4.2 |
+| `SIuice` | `SIuice` | m s-1 | west face | `(face, j, i_g)` | hFacW | sparse | see 4.2 |
+| `SIvice` | `SIvice` | m s-1 | south face | `(face, j_g, i)` | hFacS | sparse | see 4.2 |
+
+"Dense" means non-zero over the whole ocean and expected to compress like
+SST (1.19x, measured); "sparse" means zero except under sea ice
+(`SI*`) or ice shelves (`SHI*`, `pkg/shelfice` fluxes) and expected to
+compress far better -- inference, measured by benchmark run D.
+`ZERO_IS_NOT_LAND` grows to cover all eight sparse fields.
 
 `SSU`/`SSV` are the model's face-relative components on the C-grid faces.
 Eastward/northward velocity is obtained by interpolating both to cell
@@ -294,13 +360,15 @@ asked to confirm (section 11).
 ### 4.2 Snapshot or hourly mean -- unresolved, handled
 
 Dan Whitt stated "hourly snapshots of every variable". That is certain for
-the state variables. The fluxes and sea-ice fields are `pkg/diagnostics`
-output, and MITgcm averages a diagnostic over its output interval unless
-its `frequency` in `data.diagnostics` is negative. The check attempted on
-2026-10-20 established only that there are **no `.meta` files** (which would
-have carried `timeInterval`), so the question is open. It changes variable
-attributes and documentation, not the store layout, so it does not block
-the code work. The design handles it as follows:
+the state variables. `KPPhbl`, `PhiBot`, the fluxes, the ice-shelf fluxes
+and the sea-ice fields are `pkg/diagnostics` output, and MITgcm averages a
+diagnostic over its output interval unless its `frequency` in
+`data.diagnostics` is negative. The checks so far established only that
+there are **no `.meta` files** (which would have carried `timeInterval`);
+the inventory of 2026-10-20 says which fields exist, not how they were
+sampled. So the question is **still open**. It changes variable attributes
+and documentation, not the store layout, so it does not block the code
+work. The design handles it as follows:
 
 * **Pre-launch check** (one paste from Pleiades, before the one-pass run):
   ```bash
@@ -322,23 +390,23 @@ the code work. The design handles it as follows:
   (`repair_store_attrs`, same shape as `repair_store_dims`) rewrites the
   attributes and re-consolidates -- seconds per store, no chunks touched.
 
-### 4.3 The field list is decided at run time
+### 4.3 The field list: settled, and still resolved at run time
 
-`--fields all` inventories the raw tree (`llc_v2.inventory`) and takes every
-prefix whose `.data` files are present in **every readable folder** and
-which is in `SURFACE_FIELDS`. Prefixes present everywhere but unknown to the
-table are logged and skipped unless named explicitly; prefixes in the table
-but absent somewhere (`KPPhbl`, `PhiBot` were not in the 2026-09-24
-inventory) are skipped with a warning. The resolved list is logged and
-stored in each run's stats. The inventory's summary block is what to paste
-to confirm it beforehand:
+The 2026-10-20 inventory settles the list: the 21 prefixes of section 4.1
+are present in all 95 folders, and nothing else is (section 2.1). `KPPhbl`
+and `PhiBot`, which the 2026-09-24 notes had not mentioned, are present
+throughout; `SHIfwFlx`, `SHIhtFlx` and `SIhsalt` were not in
+`SURFACE_FIELDS` and are added.
 
-```bash
-wr_llc_v2_inventory $OUT --quiet | sed -n '/number of folders containing it/,$p'
-```
-
-(The earlier suggested `grep "^combos"` matched nothing because the tool
-prints that heading, not the word "combos".)
+`--fields all` still resolves the list at run time: `llc_v2.inventory` over
+the tree, keep every prefix whose `.data` files are present in **every
+readable folder** and which is in `SURFACE_FIELDS`. This guards against the
+tree changing again (new segments with a different diagnostic set would drop
+a field with a warning rather than silently leaving stores incomplete), and
+it ignores the partial-coverage families of section 2.1 without naming
+them. Prefixes present everywhere but unknown to the table are logged and
+skipped unless named explicitly. The resolved list is logged and stored in
+each run's stats, and should equal the 21 above.
 
 ---
 
@@ -382,7 +450,9 @@ extraction runs.
 `oceTAUY`, `SIuice`, `SIvice`, which the name-based rule would have masked
 with `hFacC` (leaving land-adjacent face points as 0 and giving a NaN
 pattern matching no mask). `--mask-dir` becomes mandatory when any
-`ZERO_IS_NOT_LAND` field is requested. Masks are read once per process.
+`ZERO_IS_NOT_LAND` field is requested, and that set grows to all eight
+sparse fields (`SI*`, `SHI*`), which are legitimately 0 over most of the
+ocean. Masks are read once per process.
 
 ### 5.3 More requests in flight: `--concurrency` and whole-variable writes
 
@@ -484,7 +554,7 @@ throughout; dest `s3://llc4320-v2/BENCH`.
 | A | 1 process, defaults, hours 1-6 of some day | baseline s/store; expect ~85 |
 | B | 1 process, `ZARR_ASYNC__CONCURRENCY=40`, hours 7-12 | 35-45 s confirms latency-bound; equal to A means CPU (`top`: one core pinned) or per-connection bandwidth -- processes help either way |
 | C | 4 processes (`setsid`/`&`), four disjoint 6-hour windows, same variable | aggregate = wall / 24 stores; near B/4 -> use 6-8 workers; near B -> egress or Nautilus is the ceiling, use 2-3 |
-| D | 1 hour, `--fields all`, to local scratch `$SCR/BENCH` | `du -s` per variable directory: compressed size per field, especially the sea-ice fields (section 8) |
+| D | 1 hour, `--fields all` (21 variables), to local scratch `$SCR/BENCH` | `du -s` per variable directory: compressed size per field; the eight sparse fields decide whether the total is ~65 TB or ~100 TB (section 8) |
 
 Also, before launch: `qsub -v LIMIT=1 wrangler/ogcm/pbs/llc_v2_surface.pbs`
 tells whether compute nodes reach Nautilus; if they do, the one-pass run
@@ -506,59 +576,79 @@ s3://llc4320-v2/BENCH`. Record A-D in `llc4320_v2_other_fields.md` `## Logs`.
    Afterwards the SST record is contiguous to 2024-01-31 23:00.
 2. **Code changes and tests** (sections 5 and 10); commit, push, `git pull`
    + `pip install -e .` on Pleiades.
-3. **Pre-launch pastes**: inventory summary (4.3), `data.diagnostics` /
-   `STDOUT` frequencies (4.2), PBS egress test (6).
-4. **Benchmark** A-D; choose `--workers`, `--verify`, node type; clean up.
-5. **One pass over the full record**:
+3. **Pre-launch pastes**: the folder count, date range and dry-run
+   discovered count for the 95-folder tree (2.1); `data.diagnostics` /
+   `STDOUT` frequencies (4.2); PBS egress test (6). The field list itself is
+   settled (4.3).
+4. **Decide storage** (section 8): confirm a quota of ~100 TB with Nautilus,
+   or trim the field list, before anything is written.
+5. **Benchmark** A-D; choose `--workers`, `--verify`, node type; clean up.
+6. **One pass over the full record**:
    ```bash
    wr_llc_v2_surface $OUT s3://llc4320-v2/SURFACE --fields all --mask-dir $MASKDIR --no-grid \
        --workers N --concurrency 32 --verify full [--time-mean ...]
    ```
-   The 189 unreadable hours are discovered (the folder lists) but every
-   field is "missing", so no store is written for them. Monitor with the
-   log (`grep -c " wrote "`, `WARNING|Error`) and the per-hour S3 probe
-   used on 2026-10-14. Re-running the same command finishes anything that
-   failed; it is idempotent at the variable level.
-6. **Audit** from the workstation: every expected hour's group attributes
+   If the tree now extends past 2024-02-08 (2.1), this same pass writes
+   those new hours with **all 21 variables including SST**, so the SST
+   record is extended as a by-product. Any hours whose files are still
+   unreadable (the 189, if `run_sep32026` is still closed) are discovered
+   but every field is "missing", so no store is written for them. Monitor
+   with the log (`grep -c " wrote "`, `WARNING|Error`) and the per-hour S3
+   probe used on 2026-10-14. Re-running the same command finishes anything
+   that failed; it is idempotent at the variable level.
+7. **Audit** from the workstation: every expected hour's group attributes
    (`variables`, `complete`, per-array `complete`), a NaN-pattern check of
    `U`/`V` against `hFacW_k0`/`hFacS_k0`, and value ranges per variable.
-7. **HOWTO** update and Read the Docs; remove "Current gaps" as they close.
-8. **When Dan opens the final folder**: the same command with
-   `--start 2024-02-01` writes the 189 stores with all variables, SST
-   included, in one go.
+8. **HOWTO** update and Read the Docs; remove "Current gaps" as they close.
+9. **When Dan opens `run_sep32026`**: the same command with
+   `--start 2024-02-01 --end 2024-02-09` writes the 189 stores with all
+   variables, SST included, in one go.
 
 ---
 
 ## 8. Storage and runtime estimates
 
-Measured constants (SST): 0.47 GB stored per field-hour, ~400 objects per
-variable per store, 85 s per store per field in one process as the code
-stands. 9,692 hours.
+Measured constants (SST): 0.47 GB stored per field-hour (4.59 TB per dense
+field over 9,692 hours), ~400 objects per variable per store, 85 s per
+store per field in one process as the code stands. Hour count: **9,692** as
+known today; if the 95-folder tree extends the record to ~11,000 hours
+(section 2.1, inference) multiply everything below by about 1.15.
 
-| | stored | objects | note |
+**Storage, 20 new fields** (12 dense + 8 sparse; class per section 4.1):
+
+| | stored | objects | basis |
 |---|---|---|---|
 | `Theta` (done) | 4.4 TB | 3.9 M | measured |
-| 10 full-ocean fields (`Salt`, `U`, `V`, `Eta`, 6 fluxes) | ~46 TB | ~39 M | inference: same as SST per field |
-| 5 sea-ice fields | 0.5-2 TB if they compress 10-50x (mostly zeros); **23 TB if they compress like SST** | ~19 M | unmeasured; run D measures it |
-| total | **~52-55 TB likely; 73 TB upper bound** | ~62 M | upper bound exceeds the 55 TB from Q3 |
+| 12 dense fields (`Salt`, `U`, `V`, `Eta`, `KPPhbl`, `PhiBot`, 6 `oce*`) | **~55 TB** | ~47 M | inference: same as SST per field |
+| 8 sparse fields (`SI*` x 6, `SHI*` x 2) | **~1-4 TB** if they compress 10-50x (mostly zeros) ... **37 TB** if they compress like SST | ~31 M | unmeasured; run D measures it |
+| total, 21 variables | **~60-65 TB likely; ~97 TB upper bound** | ~82 M | **every case exceeds the 55 TB accepted in Q3** |
 
-The object count matters as much as the bytes: in a latency-bound loop the
-sea-ice fields cost the same round trips as any other field even if their
-bytes are negligible. Zarr omits only all-*fill* (NaN) chunks; all-zero
-ocean chunks are written (small).
+So the 55 TB figure no longer fits even if the sparse fields cost nothing:
+the twelve dense fields alone fill it. The choice before launch is either a
+quota of ~70 TB (or ~80 TB if the record is ~11,000 hours) confirmed with
+Nautilus and run D's measurement of the sparse fields, or a shorter list.
+If trimming, the candidates with the least surface-ocean interest are
+`PhiBot` (bottom pressure) and `KPPhbl` (mixed-layer depth), 4.6 TB each;
+the sparse fields are cheap in bytes and not worth dropping for storage.
 
-Runtime, 15 fields (inference until the benchmark):
+The object count matters as much as the bytes: in a latency-bound loop a
+sparse field costs the same round trips as a dense one even if its bytes
+are negligible. Zarr omits only all-*fill* (NaN) chunks; all-zero ocean
+chunks are written (small).
+
+**Runtime, 20 fields over 9,692 hours** (inference until the benchmark):
 
 | configuration | s per store per field | wall clock |
 |---|---|---|
-| as the code stands, 1 process | 85 | ~140 days |
-| `--concurrency 32`, whole-variable writes, 1 process | 40 (expected) | ~67 days |
-| same, 4 workers | 40 | ~17 days |
-| same, 6 workers | 40 | ~11 days |
-| same, 6 workers, `--verify sample` | ~30 | ~8 days |
+| as the code stands, 1 process | 85 | ~190 days |
+| `--concurrency 32`, whole-variable writes, 1 process | 40 (expected) | ~90 days |
+| same, 4 workers | 40 | ~22 days |
+| same, 6 workers | 40 | ~15 days |
+| same, 8 workers | 40 | ~11 days |
+| same, 6 workers, `--verify sample` | ~30 | ~11 days |
 
-Lustre reads: 0.97 GB per field-hour, ~141 TB in all; single-stream reads
-are inferred at 1-3 s each and are not the bottleneck.
+Lustre reads: 0.97 GB per field-hour, ~190 TB in all for 20 fields;
+single-stream reads are inferred at 1-3 s each and are not the bottleneck.
 
 ---
 
@@ -607,8 +697,9 @@ unchanged. `docs/nautilus/s3_llc4320v2.md` is unchanged.
 
 | item | status / mitigation |
 |---|---|
-| **Storage may exceed 55 TB** (upper bound 73 TB) | run D measures the sea-ice compression before launch; if the total is over, drop `SIhsnow`/`SIhsalt` or confirm a higher quota with Nautilus |
-| **Snapshot vs. mean for the diagnostics** | open (section 4.2); pre-launch check; attributes carry the uncertainty; metadata-only fix-up afterwards if needed |
+| **Storage exceeds 55 TB in every estimate** (~60-65 TB likely, ~97 TB upper bound, more if the record is longer) | decision before launch: confirm ~70-80 TB with Nautilus, or trim (`PhiBot`, `KPPhbl` first); run D measures the sparse fields |
+| **95 folders, not 83** -- the record's extent is unknown from here | one paste (section 2.1) gives the span and the dry-run count; the design is unchanged, the numbers scale |
+| **Snapshot vs. mean for the diagnostics** | still open (section 4.2); pre-launch check; attributes carry the uncertainty; metadata-only fix-up afterwards if needed |
 | **`SIuice`/`SIvice` grid location** (C-grid U/V points assumed) | ask Dan; a wrong assumption is a metadata-only fix (`repair_store_dims`) plus re-masking |
 | **Endpoint throttling** (transient 403s seen 2026-10-08 under 6 external workers) | more in-flight requests raise the odds; per-variable retries with backoff are in place; if `failed=` climbs, lower `--workers`/`--concurrency` |
 | **Two writers on one store** | `--workers` partitions; rule: one command at a time, no repair/consolidate tools during extraction |
@@ -616,8 +707,11 @@ unchanged. `docs/nautilus/s3_llc4320v2.md` is unchanged.
 | **Mixed variable sets during the run** | `open_range` intersection (5.8); HOWTO states per-field coverage |
 | **The 189 hours** | depend on Dan relaxing permissions on `run_sep32026`; the email draft is in `llc4320_v2_other_fields.md` |
 | **Exact-zero artefact** | will appear identically in every `hFacC`-masked field; documented, not fixed |
-| **Field list** | `KPPhbl`/`PhiBot`/`SIhsalt` presence unconfirmed; resolved at run time, confirmed by the inventory paste |
+| **Field list** | settled by the 2026-10-20 inventory: 21 prefixes in all 95 folders; still resolved at run time as a guard |
+| **Out-of-scope file families** (`R_*`, `*F`, `Eta_tide*`, 3D products) | partial coverage, ignored by construction; what they are is inference (section 2.1) -- worth one line in the Dan email |
 
 Items that need Xavier before launch: the two outage-hour commands (7.1);
-the three pre-launch pastes (7.3); the benchmark (6); sending the Dan email;
-confirming the bucket quota against the upper-bound estimate.
+the pastes of 7.3 (folder span and dry-run count, diagnostic frequencies,
+PBS egress); the storage decision (7.4); the benchmark (6); sending the Dan
+email (adding the `SIuice`/`SIvice` grid question, the `R_*`/`Eta_tide`
+meaning, and whether the run now extends past 2024-02-08).

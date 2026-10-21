@@ -50,6 +50,82 @@ Log your work.
 2. See my answers to your second round of questions.  Then write the
 design document.  Use Fable if you can. Log your work.
 
+3. I have reviewed the design document.  Here is the output from the `wr_llc_v2_inventory` command from the design doc:
+```
+(field, ext) -> number of folders containing it:
+  Eta.data       95
+  EtaF.data       1
+  Eta_tide.data       57
+  Eta_tide_presal.data       29
+  KPPhbl.data       95
+  PhiBot.data       95
+  R_Eta.data       5
+  R_SIarea.data       5
+  R_SIheff.data       5
+  R_SIhsalt.data       5
+  R_SIhsnow.data       5
+  R_SIuice.data       5
+  R_SIvice.data       5
+  R_Salt.data       5
+  R_SaltF.data       1
+  R_Theta.data       5
+  R_ThetaF.data       1
+  R_U.data       5
+  R_V.data       5
+  R_W.data       1
+  SHIfwFlx.data       95
+  SHIhtFlx.data       95
+  SIarea.data       95
+  SIheff.data       95
+  SIheffF.data       4
+  SIhsalt.data       95
+  SIhsnow.data       95
+  SIuice.data       95
+  SIvice.data       95
+  SSS.data       95
+  SST.data       95
+  SSU.data       95
+  SSV.data       95
+  Salt.bloat      15
+  Salt.every5.shrunk 11
+  Salt.sections5deg 11
+  Salt.shrunk     39
+  SaltF.data       3
+  SaltFF.data       1
+  Theta.bloat      13
+  Theta.bloat.tmp  1
+  Theta.every5.shrunk 11
+  Theta.sections5deg 11
+  Theta.shrunk     40
+  ThetaF.data       2
+  ThetaFF.data       1
+  U.bloat      16
+  U.every5.shrunk 11
+  U.sections5deg 11
+  U.shrunk     39
+  V.bloat      16
+  V.bloat.bad  1
+  V.every5.shrunk 11
+  V.sections5deg 11
+  V.shrunk     39
+  W.every5.shrunk 11
+  W.level1     1
+  W.sections5deg 11
+  W.shrunk     39
+  oceFWflx.data       95
+  oceQnet.data       95
+  oceQsw.data       95
+  oceSflux.data       95
+  oceTAUX.data       95
+  oceTAUY.data       95
+```
+Please revise the design document to reflect this information.
+Then geneate a slide deck that summarizes the design.
+Put it in `claude_prompts/llc4320_v2/llc4320_v2_design.pptx`.
+Be sure to include a one line summary on each slide
+Use Fable if you can.
+Log your work.
+
 ## Pre-run Q&A
 
 **Claude (2026-10-20):** Questions before any of this is designed. The first
@@ -516,4 +592,73 @@ No code changed; nothing on the bucket touched. Open items for Xavier: run
 the two outage-hour commands; paste the three pre-launch checks; run the
 benchmark; send the Dan email (add the `SIuice`/`SIvice` grid-location
 question); confirm the bucket quota against the upper-bound estimate. This
+round ran as Fable 5.1.
+
+### 2026-10-20 (Design prompt 3: full inventory read; design doc revised; slide deck built)
+
+Read the `(field, ext) -> number of folders` block Xavier pasted from
+`wr_llc_v2_inventory`. Three things in it changed the design.
+
+**95 folders, not 83.** Every one of 21 prefixes is present in 95 folders;
+SST was extracted from 83 (84 once the live-run symlink became listable).
+The paste omitted the tool's first lines (folder count with first/last
+dates, unreadable folders), so I cannot tell from here what the extra
+folders are. Most likely (inference) Dan's run continued past 2024-02-08 and
+~11 new segments landed, which at 4-7 simulated days per folder would add
+~1,300-1,500 hours for a record of ~11,000 hours instead of 9,692. The
+9,692-hour count-equals-span proof must be redone on the new tree. Asked
+for one paste (`wr_llc_v2_inventory $OUT --quiet | head -4` and the dry-run
+`Discovered`/`Duplicate`/`spans` lines). The code design is unchanged; the
+numbers scale.
+
+**20 new fields, not 15.** Present throughout: `SSS SSU SSV Eta KPPhbl
+PhiBot oceQnet oceQsw oceFWflx oceSflux oceTAUX oceTAUY SHIfwFlx SHIhtFlx
+SIarea SIheff SIhsalt SIhsnow SIuice SIvice`. `SHIfwFlx`/`SHIhtFlx`
+(ice-shelf fluxes) and `SIhsalt` are not in `SURFACE_FIELDS` and are added
+by the design. Classified as 12 dense (compress like SST, 1.19x measured)
+and 8 sparse (`SI*`, `SHI*`: zero away from ice; compression inferred, to be
+measured by benchmark run D). Storage redone: the 12 dense fields alone are
+~55 TB at SST's measured 0.47 GB per field-hour; with the sparse fields
+~60-65 TB likely and ~97 TB upper bound including Theta, times ~1.15 if the
+record is ~11,000 hours. **Every case exceeds the 55 TB accepted in Q3**, so
+the quota or the field list is a decision before launch (`PhiBot`, `KPPhbl`
+named as the first candidates to trim). Runtime redone for 20 fields:
+~190 days single-process as the code stands; ~15 days with concurrency 32
+and 6 workers; ~11 days with 8 workers or `--verify sample` (inference).
+
+**Partial-coverage families, out of scope.** `R_*` (5 folders), `*F`/`*FF`
+(1-4), `Eta_tide` (57), `Eta_tide_presal` (29), and the 3D `.shrunk`,
+`every5.shrunk`, `sections5deg`, `bloat`, `W.level1` products. What they are
+is inference from the names (a second output stream, other-cadence
+variants, tidal SSH, the depth phase); the run-time field resolution ignores
+them by construction since they are not in every folder. Snapshot vs. mean
+for the diagnostics is **not** settled by the inventory and stays open.
+
+**Design doc** (`llc4320_v2_design.md`): new section 2.1 (what the inventory
+showed, the 95-folder question, the out-of-scope table); section 4.1
+rebuilt as a 21-row table with a compressibility class; 4.2 marked still
+open; 4.3 "settled, and still resolved at run time"; 5.2 `ZERO_IS_NOT_LAND`
+covers all eight sparse fields; benchmark run D now all 21 fields; run order
+gains "decide storage" and notes the pass extends SST if the tree is
+longer; section 8 and the risk table rewritten with the new totals.
+
+**Slide deck** `llc4320_v2_design.pptx`, 17 slides, built by
+`make_llc4320_v2_design_slides.py` (python-pptx; node/pptxgenjs is not
+installed here), same palette and 20 pt floor as `docs/slides/llc4320_v2.pptx`.
+Every slide has a one-line takeaway under its title. Arc: title; goal and
+status; raw source; pipeline; face-order bug; store layout and grid; access;
+the 20 fields in three groups; what the inventory changed; snapshot/mean;
+append mode and masks; concurrency, workers, verify; the I/O-bound evidence
+(native bar chart of the measured s/store); benchmark plan; run order;
+storage and runtime; risks and decisions. Validated with the pptx skill's
+`validate.py` (passed), rendered through LibreOffice to images and every
+slide inspected; fixed six defects on the first pass (wrapping names on the
+title card, a mid-word path break, an undersized facet schematic, wrapping
+monospace labels, a duplicated chart title, a two-line summary), re-rendered
+and re-checked those slides.
+
+No code changed; nothing on the bucket touched. Open for Xavier: the
+folder-span paste; the storage decision; the diagnostic-frequency paste;
+the outage-hour runs; the benchmark; the Dan email (now also: does the run
+continue past 2024-02-08, and what are the `R_*`/`Eta_tide*` files). This
 round ran as Fable 5.1.
