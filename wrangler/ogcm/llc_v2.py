@@ -1324,11 +1324,15 @@ def consolidate_store(store_url: str, endpoint: str = None, profile: str = None)
             store = fs.get_mapper(str(store_url)[len('s3://'):])
         else:
             store = str(store_url)
-        g = zarr.consolidate_metadata(store)
-        n = len(dict(g.members()))
+        # Count members BEFORE consolidating: `consolidate_metadata` writes
+        # its document immediately, so checking afterwards would leave an
+        # empty one behind, and readers would then open the store as an
+        # empty dataset instead of reporting it missing.
+        n = len(dict(zarr.open_group(store, mode='r').members()))
         if n == 0:
-            logger.warning("%s: consolidation found no arrays; leaving it alone", store_url)
+            logger.warning("%s: no arrays to consolidate; leaving it alone", store_url)
             return False
+        zarr.consolidate_metadata(store)
         return True
     except Exception as e:
         logger.warning("%s: could not consolidate metadata (%s: %s)",

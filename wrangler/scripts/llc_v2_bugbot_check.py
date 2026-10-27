@@ -6,7 +6,9 @@
    guard; ``SURFACE/20231228T23.zarr`` (an empty store) was left with an empty
    consolidated document, which ``open_range`` then treats as a real hour.
 
-Read-only.  Run with::
+Both are fixed as of 2026-10-27 (and the empty ``zarr.json`` deleted), so the
+expected output is now ``time = 07:00, 08:00, 09:00``, the store absent, and
+both ranges returning 22:00 and 00:00 only.  Read-only.  Run with::
 
     PYTHONPATH=. conda run -n ocean14 python wrangler/scripts/llc_v2_bugbot_check.py
 """
@@ -31,11 +33,16 @@ def check_empty_consolidated(name='20231228T23.zarr'):
     """Finding 2: consolidated-metadata member count of an empty store, and its effect."""
     s3 = boto3.client('s3', endpoint_url=s3_endpoint(),
                       config=Config(s3={'addressing_style': 'path'}))
-    obj = s3.get_object(Bucket='llc4320-v2', Key=f'SURFACE/{name}/zarr.json')
-    meta = json.loads(obj['Body'].read())
-    cm = meta.get('consolidated_metadata')
-    print(f"{name}: zarr.json written {obj['LastModified']}, consolidated members:",
-          None if cm is None else len(cm.get('metadata', {})))
+    try:
+        obj = s3.get_object(Bucket='llc4320-v2', Key=f'SURFACE/{name}/zarr.json')
+    except s3.exceptions.NoSuchKey:
+        # Deleted 2026-10-27, so the hour reads as missing like the other gaps.
+        print(f"{name}: no zarr.json (store absent)")
+    else:
+        meta = json.loads(obj['Body'].read())
+        cm = meta.get('consolidated_metadata')
+        print(f"{name}: zarr.json written {obj['LastModified']}, consolidated members:",
+              None if cm is None else len(cm.get('metadata', {})))
     for kw in ({}, {'variables': ['Theta']}):
         try:
             ds = acc.open_range('2023-12-28 22', '2023-12-29 00', **kw)

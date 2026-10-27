@@ -5,7 +5,7 @@ writers used for the real one, so no network and no credentials are involved.
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -93,6 +93,26 @@ def test_hours_between():
         llc.hours_between('2023-03-02', '2023-03-01')
 
 
+def test_hours_between_snaps_inward():
+    """Bugbot (PR #4): off-hour bounds must not mislabel or drop snapshots."""
+    hrs = llc.hours_between('2023-03-01 06:30', '2023-03-01 09:00')
+    assert [h.hour for h in hrs] == [7, 8, 9]              # start rounded up
+    hrs = llc.hours_between('2023-03-01 06:00', '2023-03-01 08:45')
+    assert [h.hour for h in hrs] == [6, 7, 8]              # end rounded down
+    assert all(h.minute == 0 and h.second == 0 for h in hrs)
+    hrs = llc.hours_between(datetime(2023, 3, 1, 6, 0, 1), datetime(2023, 3, 1, 7, 59, 59))
+    assert [h.hour for h in hrs] == [7]
+    assert llc.hours_between('2023-03-01 06:15', '2023-03-01 06:45') == []
+
+
+def test_parse_date_converts_to_utc():
+    """An aware datetime in another zone names the UTC hour's store."""
+    pst = timezone(timedelta(hours=-8))
+    assert llc.store_name(datetime(2023, 3, 1, 6, tzinfo=pst)) == '20230301T14.zarr'
+    assert llc._parse_date(datetime(2023, 3, 1, 6, tzinfo=pst)).tzinfo is timezone.utc
+    assert llc.store_name('2023-03-01 06:59') == '20230301T06.zarr'   # floors
+
+
 def test_storage_options():
     o = llc.storage_options()
     assert o['anon'] is True
@@ -144,6 +164,32 @@ def test_open_range(product):
         llc.open_range('2023-03-01 00', '2023-03-01 05', root=dest, skip_missing=False)
     with pytest.raises(IOError):
         llc.open_range('2024-01-01 00', '2024-01-01 02', root=dest)
+
+
+def test_open_range_off_hour_bounds(product):
+    """Bugbot (PR #4): the time axis carries the true snapshot times."""
+    dest, _, _, truth = product
+    ds = llc.open_range('2023-03-01 00:30', '2023-03-01 02:00', root=dest)
+    assert [str(t)[:16] for t in ds.time.values] == ['2023-03-01T01:00', '2023-03-01T02:00']
+    np.testing.assert_allclose(ds['Theta'].isel(time=0).values, truth[1], equal_nan=True)
+    with pytest.raises(ValueError):
+        llc.open_range('2023-03-01 00:15', '2023-03-01 00:45', root=dest)
+
+
+def test_open_range_skips_empty_store(product):
+    """An empty store with empty consolidated metadata (as SURFACE/20231228T23
+    was on S3) is a missing hour, not an hour of NaNs or a KeyError."""
+    zarr = pytest.importorskip('zarr')
+    dest, _, _, _ = product
+    empty = os.path.join(dest, '20230301T03.zarr')
+    zarr.open_group(empty, mode='w')
+    zarr.consolidate_metadata(empty)                 # the old, unguarded behaviour
+    ds = llc.open_range('2023-03-01 01', '2023-03-01 03', root=dest)
+    assert ds.sizes['time'] == 2
+    ds = llc.open_range('2023-03-01 01', '2023-03-01 03', root=dest, variables=['Theta'])
+    assert ds.sizes['time'] == 2
+    with pytest.raises(Exception):
+        llc.open_range('2023-03-01 01', '2023-03-01 03', root=dest, skip_missing=False)
 
 
 # ---------------------------------------------------------------------------

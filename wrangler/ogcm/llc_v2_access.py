@@ -83,9 +83,16 @@ def _open_kwargs(root, **kw) -> dict:
 
 
 def _parse_date(value) -> datetime:
-    """Accept a datetime, ``'YYYY-MM-DD'``, ``'YYYY-MM-DD HH'`` or ``'YYYYMMDDTHH'``."""
+    """Accept a datetime, ``'YYYY-MM-DD'``, ``'YYYY-MM-DD HH'`` or ``'YYYYMMDDTHH'``.
+
+    Returns a UTC datetime. A naive datetime is taken to be UTC; an aware one
+    in another zone is converted, so ``store_name`` always formats the UTC
+    hour. Minutes and seconds are kept; callers decide how to snap them.
+    """
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
     text = str(value).strip()
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H', '%Y-%m-%d %H',
                 '%Y-%m-%d', '%Y%m%dT%H'):
@@ -97,15 +104,31 @@ def _parse_date(value) -> datetime:
 
 
 def store_name(date) -> str:
-    """``'2023-03-01 06:00'`` -> ``'20230301T06.zarr'``."""
+    """``'2023-03-01 06:00'`` -> ``'20230301T06.zarr'``.
+
+    A time that is not on the hour is floored to the hour it falls in.
+    """
     return _parse_date(date).strftime('%Y%m%dT%H') + '.zarr'
 
 
+def _floor_hour(t: datetime) -> datetime:
+    return t.replace(minute=0, second=0, microsecond=0)
+
+
 def hours_between(start, end):
-    """Hourly datetimes from *start* to *end*, both inclusive."""
+    """Whole hours from *start* to *end*, both inclusive.
+
+    Only snapshots that fall inside ``[start, end]`` are returned, at their
+    true times: a *start* that is not on the hour is rounded up and an *end*
+    that is not on the hour is rounded down. ``'06:30'`` to ``'09:00'`` gives
+    07:00, 08:00 and 09:00. The list is empty if no whole hour falls inside.
+    """
     t, t1 = _parse_date(start), _parse_date(end)
     if t1 < t:
         raise ValueError(f"end ({t1}) precedes start ({t})")
+    if t != _floor_hour(t):
+        t = _floor_hour(t) + CADENCE
+    t1 = _floor_hour(t1)
     out = []
     while t <= t1:
         out.append(t)
@@ -148,30 +171,39 @@ def open_range(start, end, root: str = DEFAULT_ROOT, variables=None,
     takes a few minutes. Subset in time first where you can.
 
     Args:
-        start, end: first and last hour, both inclusive.
+        start, end: first and last hour, both inclusive. Times that are
+            not on the hour are snapped inward (see `hours_between`).
         root (str, optional): prefix holding the stores.
         variables (list, optional): keep only these (e.g. ``['Theta']``).
         skip_missing (bool, optional): warn and skip an hour that cannot be
-            opened, rather than failing the whole range. Defaults to True.
+            opened, holds no data variables, or lacks one of *variables*,
+            rather than failing the whole range. Defaults to True.
 
     Returns:
         xarray.Dataset: dims ``(time, face, j, i)``.
     """
     import xarray as xr
     dates = hours_between(start, end)
+    if not dates:
+        raise ValueError(f"no whole hour falls between {start} and {end}")
     opts = _open_kwargs(root, **kw)
     root = str(root).rstrip('/')
     parts, stamps = [], []
     for d in dates:
         try:
             ds = xr.open_zarr(f"{root}/{store_name(d)}", consolidated=None, **opts)
+            # A store that opens but holds no data (e.g. an empty store whose
+            # consolidated metadata lists no members) is a missing hour, not
+            # an hour of NaNs.
+            if not ds.data_vars:
+                raise IOError("store holds no data variables")
+            if variables is not None:
+                ds = ds[list(variables)]
         except Exception as e:
             if not skip_missing:
                 raise
             logger.warning("skipping %s (%s: %s)", store_name(d), type(e).__name__, e)
             continue
-        if variables is not None:
-            ds = ds[list(variables)]
         parts.append(ds)
         stamps.append(np.datetime64(d.replace(tzinfo=None), 'ns'))
     if not parts:
@@ -269,7 +301,8 @@ def extract_point(lat: float, lon: float, start, end, root: str = DEFAULT_ROOT,
 
     Args:
         lat, lon (float): degrees north / east.
-        start, end: first and last hour, both inclusive.
+        start, end: first and last hour, both inclusive. Times that are
+            not on the hour are snapped inward (see `hours_between`).
         variables (iterable, optional): defaults to ``('Theta',)``.
 
     Returns:

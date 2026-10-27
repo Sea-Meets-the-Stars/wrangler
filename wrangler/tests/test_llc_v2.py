@@ -1079,6 +1079,21 @@ def test_consolidate_store_records_members(tmp_path):
     assert list(ds2.data_vars) == ['Theta']
 
 
+def test_consolidate_store_leaves_empty_store_alone(tmp_path):
+    """Bugbot (PR #4): no consolidated document may be written for a store
+    with no members. The old code consolidated first and checked after, which
+    left SURFACE/20231228T23.zarr reading as an empty dataset."""
+    zarr = pytest.importorskip('zarr')
+    url = str(tmp_path / '20231228T23.zarr')
+    zarr.open_group(url, mode='w')
+    before = (tmp_path / '20231228T23.zarr' / 'zarr.json').read_text()
+    assert llc_v2.consolidate_store(url) is False
+    after = (tmp_path / '20231228T23.zarr' / 'zarr.json').read_text()
+    assert after == before
+    assert 'consolidated_metadata' not in json.loads(after) or \
+        json.loads(after)['consolidated_metadata'] is None
+
+
 # ---------------------------------------------------------------------------
 # Arakawa C-grid staggering (Lauren's report, 2026-10-20)
 # ---------------------------------------------------------------------------
