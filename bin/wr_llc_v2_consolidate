@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Write consolidated metadata into LLC4320 v2 Zarr stores so they open in one request
+"""
+
+from wrangler.scripts import llc_v2_consolidate
+
+if __name__ == '__main__':
+    args = llc_v2_consolidate.parser()
+    llc_v2_consolidate.main(args)

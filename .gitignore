@@ -172,3 +172,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Slide-figure download cache (docs/slides/llc4320_v2_figures.py)
+docs/slides/figs/cache/

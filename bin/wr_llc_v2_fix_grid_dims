@@ -1,0 +1,16 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Relabel LLC4320 v2 grid dimensions to the true Arakawa C-grid staggering (metadata only)
+"""
+
+from wrangler.scripts import llc_v2_fix_grid_dims
+
+if __name__ == '__main__':
+    args = llc_v2_fix_grid_dims.parser()
+    llc_v2_fix_grid_dims.main(args)

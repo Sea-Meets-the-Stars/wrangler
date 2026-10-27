@@ -1,0 +1,18 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE file for Copyright information
+#
+# -*- coding: utf-8 -*-
+
+
+"""
+Check that s3://llc4320-v2 is anonymously readable and not anonymously writable
+"""
+
+import sys
+
+from wrangler.scripts import llc_v2_check_access
+
+if __name__ == '__main__':
+    args = llc_v2_check_access.parser()
+    sys.exit(llc_v2_check_access.main(args))

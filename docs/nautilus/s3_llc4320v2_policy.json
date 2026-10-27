@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Id": "llc4320-v2-public-read",
+  "Statement": [
+    {
+      "Sid": "PublicReadObjects",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::llc4320-v2/*"
+    },
+    {
+      "Sid": "PublicListBucket",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::llc4320-v2"
+    }
+  ]
+}

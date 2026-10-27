@@ -95,13 +95,57 @@ def match_ids(IDs, match_IDs, require_in_match=True, assume_unique:bool=False):
 
     return rows
 
+def _squared_diff_on_cells(field:np.ndarray, dx:float, axis:int):
+    """ Square one-sided differences along ``axis``, then average onto cells.
+
+    The forward differences ``(f[i+1] - f[i]) / dx`` live between cells
+    (on the cell faces of a C-grid).  They are squared *there* and the two
+    squares adjacent to each cell are averaged onto it.  The first and last
+    cells along ``axis`` have only one neighbouring difference, which is used
+    on its own (the squared one-sided difference, as ``np.gradient`` does at
+    an edge).  NaNs propagate: a cell next to a NaN is NaN.
+
+    Args:
+        field (np.ndarray): Array with at least 2 points along ``axis``.
+        dx (float): Grid spacing.
+        axis (int): Axis to difference along.
+
+    Returns:
+        np.ndarray: Same shape as ``field``.
+    """
+    f = np.moveaxis(np.asarray(field, dtype=float), axis, 0)
+    if f.shape[0] < 2:
+        raise ValueError("calc_grad2 needs at least 2 points along each axis")
+    sq = (np.diff(f, axis=0) / dx)**2
+    out = np.empty_like(f)
+    out[1:-1] = 0.5 * (sq[:-1] + sq[1:])
+    out[0] = sq[0]
+    out[-1] = sq[-1]
+    return np.moveaxis(out, 0, axis)
+
+
 def calc_grad2(field:np.ndarray, dx:float):
     """
     Calculate the squared magnitude of the gradient of a 2D field.
 
-    This function computes the squared magnitude of the gradient of a 2D array
-    (field) using finite differences. The gradient is calculated along both
-    the x and y axes, and the squared magnitude is returned.
+    The one-sided (forward) differences along each axis are squared on the
+    points between cells and only then averaged onto the cells ("square
+    first").  This is ``calculate_grad_squared_tracer`` of
+    llc4320-native-grid-preprocessing (``dbof.utils.native_gradient``) on a
+    uniform grid.
+
+    Squaring first matters.  A central difference, as in ``np.gradient``, is
+    the mean of the two one-sided differences, so at a local extremum the
+    slopes +a and -a cancel and |grad f|^2 drops to 0 -- the "sparkle"
+    artifact documented in that repo's ``docs/Gradients.md``.  Averaging the
+    squares instead gives a^2.  Before 2026-10-27 this function used
+    ``np.gradient``; values computed with it (e.g. ``DivSST2``, ``Divb2``)
+    differ from the current ones near extrema.
+
+    Intended for cutouts of regridded (near-uniform) data such as the v1
+    LLC4320 lat/lon product.  It assumes a single uniform spacing; for the
+    native LLC grid use ``dbof.utils.native_gradient``, which divides by
+    ``dxC``/``dyC``.
 
     Parameters:
         field (np.ndarray): A 2D array representing the field for which the 
@@ -113,12 +157,25 @@ def calc_grad2(field:np.ndarray, dx:float):
         np.ndarray: A 2D array of the same shape as `field`, containing the 
                     squared magnitude of the gradient at each point.
     """
+    return (_squared_diff_on_cells(field, dx, axis=1)
+            + _squared_diff_on_cells(field, dx, axis=0))
 
-    # Gradient
-    dfdx = np.gradient(field, axis=1) / dx
-    dfdy = np.gradient(field, axis=0) / dx
 
-    # Magnitude
-    grad_f2 = dfdx**2 + dfdy**2
+def coriolis(lat:(float|np.ndarray)):
+    """ Coriolis parameter at lat
 
-    return grad_f2
+    Args:
+        lat (float|np.ndarray): Latitude in degrees
+
+    Returns:
+        float: Coriolis parameter in 1/s
+    """
+
+    # Convert to radians
+    lat_rad = np.deg2rad(lat)
+
+    # Coriolis parameter
+    omega = 7.2921e-5  # Earth's rotation rate in rad/s
+    f = 2 * omega * np.sin(lat_rad)
+
+    return f

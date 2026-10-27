@@ -99,9 +99,9 @@ tbl_dmodel = {
                 help='Filename of the pre-processed file holding the cutout'),
     'pp_idx': dict(dtype=(int,np.integer), 
                 help='Index describing position of the cutout in the pp_file'),
-    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0, 1, 2), 
-                    valid=0, train=1, init=-1, test=2,
-                    help='-1: illdefined, 0: valid, 1: train, 2: test'),
+    'pp_type': dict(dtype=(int, np.integer), allowed=(-1, 0,1), 
+                    valid=0, train=1, init=-1,
+                    help='-1: illdefined, 0: valid, 1: train'),
                     # In Ulmo, we use 1 for the subset of training and 0 for the rest
                     # In SSL, we use 1 for train, 0 for validation and -1 for the rest [but not always]
     'UID': dict(dtype=np.int64,
@@ -118,4 +118,32 @@ tbl_dmodel = {
                 help='s3 bucket+path for model output'),
     # REQUIRED
     'required': ('lat', 'lon', 'datetime')
+}
+
+# Wrangler meta data model
+meta_dmodel = {
+    'tidx': dict(dtype=np.int64,
+                help='Index of the cutout in the original table'),
+    'UID': dict(dtype=np.int64,
+                help='Unique ID for the cutout. Usually an integer made from of lat, lon, datetime'),
+    'group': dict(dtype=str,
+                help='Group name in the hdf5 file, usually the date'),
+    'gidx': dict(dtype=np.int64,
+                help='Index of the cutout in the hdf5 group'),
+    'lat': dict(dtype=(float,np.floating),
+                help='Latitude of the center of the cutout (deg)'),
+    'lon': dict(dtype=(float,np.floating),
+                help='Longitude of the center of the cutout (deg)'),
+    'mx': dict(dtype=(float,np.floating),
+                help='Maximum value of the cutout'),
+    'mn': dict(dtype=(float,np.floating),
+                help='Minimum value of the cutout'),
+    'p10': dict(dtype=(float,np.floating),
+                help='10th percentile of the cutout'),
+    'p90': dict(dtype=(float,np.floating),
+                help='90th percentile of the cutout'),
+    'mu': dict(dtype=(float,np.floating),
+                help='Mean of the cutout'),
+    # REQUIRED
+    'required': ('UID', 'tidx')
 }
