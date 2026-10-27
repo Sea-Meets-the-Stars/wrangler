@@ -82,6 +82,9 @@ is much the most important.
    and matches what v1 does. Do you agree, or do your users want
    `u_east`/`v_north` served ready-made?
 
+   > **Lauren (PR #4 review, 2026-10-26):** "I agree, do native so we can
+   > track processing errors down the line better."
+
 6. **Do the 191 SST hours first?** Two of them are one-hour re-runs that could
    be done in minutes. The 189 depend on Dan. Doing the two now means the
    record is contiguous to 2024-01-31 before any new field starts, which keeps

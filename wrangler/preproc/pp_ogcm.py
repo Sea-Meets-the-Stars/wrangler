@@ -1,4 +1,19 @@
-""" Preprocssing steps related to OGCM """
+""" Preprocessing steps related to OGCM
+
+Scope: cutouts of the v1 *regridded* LLC4320 product (lat/lon netCDF files
+from ``wrangler.ogcm.llc.grab_llc_datafile``), on a near-uniform grid with a
+single spacing ``dx``.  This is not native-grid code and does not supersede
+llc4320-native-grid-preprocessing: derived fields on the native LLC C-grid
+(gradients, strain, vorticity, ...) should come from that repo's
+``dbof.utils.native_gradient``, which differences on the staggered points
+with ``dxC``/``dyC``.
+
+|grad f|^2 here (``wrangler.utils.calc_grad2``) squares the one-sided
+differences before averaging them onto cells, so it does not show the
+central-difference "sparkle" at extrema (changed 2026-10-27).  Fields that
+multiply different directional components (e.g. ``calc_F_s``) still use
+``np.gradient`` and cannot avoid it; see ``docs/Gradients.md`` in that repo.
+"""
 
 import numpy as np
 from skimage.transform import resize_local_mean
